@@ -68,6 +68,22 @@ const WAVE_BANNER_DURATION_MS = 1500;
 const MAX_MISSES = 5;
 const LANG = "cs-CZ";
 
+const SENTENCE_MAP = {
+  drozd:   { sentence: "Drozd má velký zobák.",     keywords: ["drozd", "zobák"] },
+  drak:    { sentence: "Drak letí přes hrad.",       keywords: ["drak", "hrad"] },
+  vydra:   { sentence: "Vydra loví v řece.",         keywords: ["vydra", "řece", "loví"] },
+  dráha:   { sentence: "Vlak jede po dráze.",        keywords: ["vlak", "dráze"] },
+  tráva:   { sentence: "Tráva je zelená.",           keywords: ["tráva", "zelená"] },
+  strom:   { sentence: "Strom roste v lese.",        keywords: ["strom", "lese"] },
+  straka:  { sentence: "Straka krade lesklé věci.",  keywords: ["straka", "krade"] },
+  traktor: { sentence: "Traktor jede po poli.",      keywords: ["traktor", "poli"] },
+  trubka:  { sentence: "Na trubku hraje trumpetista.", keywords: ["trubka", "trumpetista"] },
+  sestra:  { sentence: "Sestra čte knížku.",         keywords: ["sestra", "knížku"] },
+  sádra:   { sentence: "Na ruce má sádru.",          keywords: ["ruce", "sádru"] },
+  trpaslík: { sentence: "Trpaslík bydlí v lese.",   keywords: ["trpaslík", "lese", "bydlí"] },
+};
+const SENTENCE_TRIGGER_CHANCE = 0.25;
+const SENTENCE_TIMEOUT_MS = 5000;
 
 const SpeechRecognition =
   typeof window !== "undefined"
@@ -484,6 +500,7 @@ export default function RickyR() {
   const [supported, setSupported] = useState(true);
   const [micCheck, setMicCheck] = useState("idle"); // idle | listening | heard | error
   const [micCheckWord, setMicCheckWord] = useState("");
+  const [sentenceChallenge, setSentenceChallenge] = useState(null);
 
   const recognitionRef = useRef(null);
   const spawnTimerRef = useRef(null);
@@ -494,6 +511,8 @@ export default function RickyR() {
   const waveRef = useRef(0);
   const wordsSpawnedInWaveRef = useRef(0);
   const waveSpawningDoneRef = useRef(false);
+  const sentenceChallengeRef = useRef(null);
+  const sentenceTimerRef = useRef(null);
 
   useEffect(() => {
     fallingRef.current = fallingWords;
@@ -501,6 +520,9 @@ export default function RickyR() {
   useEffect(() => {
     levelRef.current = level;
   }, [level]);
+  useEffect(() => {
+    sentenceChallengeRef.current = sentenceChallenge;
+  }, [sentenceChallenge]);
 
   // Check support on mount, but don't create recognition yet
   useEffect(() => {
@@ -709,6 +731,8 @@ export default function RickyR() {
     setWave(0);
     setWaveBanner(null);
     setRoundComplete(false);
+    setSentenceChallenge(null);
+    clearTimeout(sentenceTimerRef.current);
     wordIdRef.current = 0;
     waveRef.current = 0;
     wordsSpawnedInWaveRef.current = 0;
@@ -726,6 +750,8 @@ export default function RickyR() {
     setScreen(celebrate ? "celebration" : "over");
     clearTimeout(spawnTimerRef.current);
     shouldListenRef.current = false;
+    setSentenceChallenge(null);
+    clearTimeout(sentenceTimerRef.current);
     if (recognitionRef.current) {
       try {
         recognitionRef.current.abort();
@@ -761,6 +787,7 @@ export default function RickyR() {
   useEffect(() => {
     return () => {
       shouldListenRef.current = false;
+      clearTimeout(sentenceTimerRef.current);
       if (recognitionRef.current) {
         try {
           recognitionRef.current.abort();
