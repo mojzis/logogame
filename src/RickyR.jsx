@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 
-const VERSION = "v5";
+const VERSION = "v6";
 
 // ============================================================
 // CONFIG — word sets by level, based on Czech logopedie progression
@@ -81,6 +81,72 @@ const SpeechRecognition =
     ? window.SpeechRecognition || window.webkitSpeechRecognition
     : null;
 
+function getStoredStars() {
+  try { return JSON.parse(localStorage.getItem("logogame-stars") || "{}"); }
+  catch { return {}; }
+}
+
+function saveStars(levelId, stars) {
+  const stored = getStoredStars();
+  if (!stored[levelId] || stars > stored[levelId]) {
+    stored[levelId] = stars;
+    localStorage.setItem("logogame-stars", JSON.stringify(stored));
+  }
+}
+
+function calcStars(missed) {
+  if (missed === 0) return 3;
+  if (missed <= 2) return 2;
+  return 1;
+}
+
+function ConfettiCanvas() {
+  const canvasRef = useRef(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    let raf;
+    const COLORS = ["#ef4444","#fbbf24","#34d399","#3b82f6","#a855f7","#f97316","#ec4899"];
+    const particles = Array.from({ length: 80 }, () => ({
+      x: Math.random() * canvas.width,
+      y: Math.random() * -canvas.height,
+      size: 4 + Math.random() * 6,
+      color: COLORS[Math.floor(Math.random() * COLORS.length)],
+      speed: 1 + Math.random() * 2,
+      wobble: Math.random() * Math.PI * 2,
+      wobbleSpeed: 0.02 + Math.random() * 0.03,
+    }));
+    const resize = () => {
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+    };
+    resize();
+    window.addEventListener("resize", resize);
+    const loop = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      for (const p of particles) {
+        p.y += p.speed;
+        p.wobble += p.wobbleSpeed;
+        p.x += Math.sin(p.wobble) * 1.5;
+        if (p.y > canvas.height + 10) {
+          p.y = -10;
+          p.x = Math.random() * canvas.width;
+        }
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x, p.y, p.size, p.size);
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", resize);
+    };
+  }, []);
+  return <canvas ref={canvasRef} style={S.confettiCanvas} />;
+}
+
 export default function RickyR() {
   const [screen, setScreen] = useState("menu");
   const [level, setLevel] = useState(null);
@@ -128,9 +194,9 @@ export default function RickyR() {
     }
   }, [fallingWords.length, screen, waveBanner, advanceWave]);
 
-  // Round complete → stop game as success
+  // Round complete → go to celebration screen
   useEffect(() => {
-    if (roundComplete && screen === "playing") stopGame();
+    if (roundComplete && screen === "playing") stopGame(true);
   }, [roundComplete, screen, stopGame]);
 
   // Check support on mount, but don't create recognition yet
@@ -353,8 +419,8 @@ export default function RickyR() {
     }, 50);
   };
 
-  const stopGame = useCallback(() => {
-    setScreen("over");
+  const stopGame = useCallback((celebrate = false) => {
+    setScreen(celebrate ? "celebration" : "over");
     clearTimeout(spawnTimerRef.current);
     shouldListenRef.current = false;
     if (recognitionRef.current) {
@@ -383,6 +449,15 @@ export default function RickyR() {
     };
   }, []);
 
+  const celebrationStars = useMemo(() => calcStars(missed), [missed]);
+
+  // Save stars to localStorage when celebration screen is shown
+  useEffect(() => {
+    if (screen === "celebration" && level) {
+      saveStars(level.id, celebrationStars);
+    }
+  }, [screen, level, celebrationStars]);
+
   if (!supported) {
     return (
       <div style={S.container}>
@@ -399,6 +474,8 @@ export default function RickyR() {
     );
   }
 
+  const storedStars = screen === "menu" ? getStoredStars() : {};
+
   if (screen === "menu") {
     return (
       <div style={S.container}>
@@ -409,7 +486,9 @@ export default function RickyR() {
             Vyber si skupinu hlásek:
           </p>
           <div style={S.levelGrid}>
-            {LEVELS.map((lv) => (
+            {LEVELS.map((lv) => {
+              const best = storedStars[lv.id];
+              return (
               <button
                 key={lv.id}
                 style={S.levelCard}
@@ -433,8 +512,16 @@ export default function RickyR() {
                 >
                   {lv.words.slice(0, 4).map((w) => w.word).join(", ")}&hellip;
                 </span>
+                {best != null && (
+                  <span style={{ fontSize: 18, marginTop: 4 }}>
+                    {Array.from({ length: 3 }, (_, i) =>
+                      i < best ? "\u2B50" : "\u2606"
+                    ).join("")}
+                  </span>
+                )}
               </button>
-            ))}
+              );
+            })}
           </div>
           <p style={{ fontSize: 13, color: "#64748b" }}>
             {"\u{1F3A4}"} Potřebuješ mikrofon a Chrome
@@ -531,6 +618,60 @@ export default function RickyR() {
           }}
         >
           {listening ? "\u{1F7E2}" : "\u{1F534}"}
+        </div>
+      )}
+      {screen === "celebration" && (
+        <div style={S.overlay}>
+          <ConfettiCanvas />
+          <div style={S.dragonFly}>🐉</div>
+          <div style={S.celebrationStars}>
+            {Array.from({ length: celebrationStars }, (_, i) => (
+              <span
+                key={i}
+                style={{
+                  ...S.celebrationStar,
+                  animationDelay: `${i * 0.2}s`,
+                }}
+              >
+                ⭐
+              </span>
+            ))}
+          </div>
+          <div style={S.celebrationMessage}>
+            {celebrationStars === 3
+              ? "Perfektní!"
+              : celebrationStars === 2
+                ? "Skvělé!"
+                : "Výborně!"}
+          </div>
+          <div style={{ display: "flex", gap: 24, marginBottom: 28 }}>
+            <StatBox value={score} label="bodů" />
+            <StatBox value={`${bestCombo}\u00D7`} label="nejlepší kombo" />
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 12,
+              flexWrap: "wrap",
+              justifyContent: "center",
+            }}
+          >
+            <button style={S.btn} onClick={() => startGame(level)}>
+              Další kolo
+            </button>
+            <button
+              style={{
+                ...S.btn,
+                background: "linear-gradient(135deg, #475569, #64748b)",
+              }}
+              onClick={() => {
+                setScreen("menu");
+                setLevel(null);
+              }}
+            >
+              Menu
+            </button>
+          </div>
         </div>
       )}
       {screen === "over" && (
@@ -643,6 +784,18 @@ const keyframes = `
   20%  { transform: translate(-50%, -50%) scale(1.1); opacity: 1; }
   80%  { transform: translate(-50%, -50%) scale(1); opacity: 1; }
   100% { transform: translate(-50%, -50%) scale(1.3); opacity: 0; }
+}
+@keyframes dragonFly {
+  0%   { left: -15%; top: 30%; transform: scaleX(1) scale(1); }
+  25%  { top: 15%; transform: scaleX(1) scale(1.2); }
+  50%  { top: 35%; transform: scaleX(1) scale(1); }
+  75%  { top: 20%; transform: scaleX(1) scale(1.1); }
+  100% { left: 115%; top: 25%; transform: scaleX(1) scale(1); }
+}
+@keyframes starScaleIn {
+  0%   { transform: scale(0); opacity: 0; }
+  50%  { transform: scale(1.3); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
 }`;
 
 if (typeof document !== "undefined") {
@@ -860,5 +1013,39 @@ const S = {
     cursor: "pointer",
     boxShadow: "0 4px 24px rgba(99,102,241,0.4)",
     fontFamily: "inherit",
+  },
+  confettiCanvas: {
+    position: "absolute",
+    inset: 0,
+    width: "100%",
+    height: "100%",
+    pointerEvents: "none",
+    zIndex: 0,
+  },
+  dragonFly: {
+    position: "absolute",
+    fontSize: 80,
+    animation: "dragonFly 4s linear infinite",
+    pointerEvents: "none",
+    zIndex: 1,
+  },
+  celebrationStars: {
+    display: "flex",
+    gap: 12,
+    marginBottom: 12,
+    zIndex: 2,
+  },
+  celebrationStar: {
+    fontSize: 64,
+    display: "inline-block",
+    animation: "starScaleIn 0.5s ease-out both",
+  },
+  celebrationMessage: {
+    fontSize: 48,
+    fontWeight: 900,
+    color: "#fbbf24",
+    marginBottom: 20,
+    textShadow: "0 0 40px rgba(251,191,36,0.6)",
+    zIndex: 2,
   },
 };
