@@ -1,0 +1,3 @@
+#!/bin/sh
+# Lint before every commit — blocks commits with errors
+bun run lint
