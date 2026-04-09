@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { normalize, calcStars, pickRandom } from "./utils.js";
 
 const VERSION = "v6";
 
@@ -67,14 +68,6 @@ const WAVE_BANNER_DURATION_MS = 1500;
 const MAX_MISSES = 5;
 const LANG = "cs-CZ";
 
-const normalize = (s) =>
-  s
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z]/g, "");
-
-const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
 const SpeechRecognition =
   typeof window !== "undefined"
@@ -425,12 +418,6 @@ function saveStars(levelId, stars) {
     stored[levelId] = stars;
     localStorage.setItem("logogame-stars", JSON.stringify(stored));
   }
-}
-
-function calcStars(missed) {
-  if (missed === 0) return 3;
-  if (missed <= 2) return 2;
-  return 1;
 }
 
 function ConfettiCanvas() {
