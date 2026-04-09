@@ -24,11 +24,18 @@ ricky-r.jsx       — legacy/backup copy (not used in build)
 ## Commands
 
 ```sh
-bun install       # install dependencies
+bun install       # install dependencies (also sets up git hooks)
 bun run dev       # local dev server
-bun run build     # production build → dist/
+bun run lint      # ESLint — zero warnings allowed
+bun run build     # lint + production build → dist/
 bun run preview   # preview production build
 ```
+
+## Quality gates
+
+- **ESLint** runs on every commit (pre-commit hook) and as part of `bun run build` (CI)
+- Zero warnings policy (`--max-warnings 0`) — fix warnings, don't accumulate them
+- Pre-commit hook is in `.githooks/pre-commit`, auto-configured via `postinstall`
 
 ## Conventions
 
@@ -36,5 +43,6 @@ bun run preview   # preview production build
 - Speech recognition uses `cs-CZ` locale
 - Word matching normalizes away diacritics (NFD + strip combining marks) so voice input doesn't need exact accents
 - Game levels are defined in the `LEVELS` array at the top of `RickyR.jsx`
-- All styles are inline JS objects in the `S` constant at the bottom of `RickyR.jsx`
+- Styles (`S`), keyframes, and helper components (`HudItem`, `StatBox`) are defined **before** the main component — never reference a `const` before its declaration
+- **Hook ordering in React components**: define all `useCallback` functions before any `useEffect` that references them in its dependency array. Violating this causes a runtime ReferenceError (temporal dead zone).
 - No CSS files, no external component libraries

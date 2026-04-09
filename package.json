@@ -4,9 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "postinstall": "git config core.hooksPath .githooks || true",
     "dev": "vite",
-    "lint": "eslint src/",
-    "build": "eslint src/ && vite build",
+    "lint": "eslint --max-warnings 0 src/",
+    "build": "eslint --max-warnings 0 src/ && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
