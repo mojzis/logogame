@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { normalize, calcStars, pickRandom } from "./utils.js";
 
 const VERSION = "v6";
 
@@ -67,707 +68,15 @@ const WAVE_BANNER_DURATION_MS = 1500;
 const MAX_MISSES = 5;
 const LANG = "cs-CZ";
 
-const normalize = (s) =>
-  s
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z]/g, "");
-
-const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
 const SpeechRecognition =
   typeof window !== "undefined"
     ? window.SpeechRecognition || window.webkitSpeechRecognition
     : null;
 
-function getStoredStars() {
-  try { return JSON.parse(localStorage.getItem("logogame-stars") || "{}"); }
-  catch { return {}; }
-}
-
-function saveStars(levelId, stars) {
-  const stored = getStoredStars();
-  if (!stored[levelId] || stars > stored[levelId]) {
-    stored[levelId] = stars;
-    localStorage.setItem("logogame-stars", JSON.stringify(stored));
-  }
-}
-
-function calcStars(missed) {
-  if (missed === 0) return 3;
-  if (missed <= 2) return 2;
-  return 1;
-}
-
-function ConfettiCanvas() {
-  const canvasRef = useRef(null);
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    let raf;
-    const COLORS = ["#ef4444","#fbbf24","#34d399","#3b82f6","#a855f7","#f97316","#ec4899"];
-    const particles = Array.from({ length: 80 }, () => ({
-      x: Math.random() * canvas.width,
-      y: Math.random() * -canvas.height,
-      size: 4 + Math.random() * 6,
-      color: COLORS[Math.floor(Math.random() * COLORS.length)],
-      speed: 1 + Math.random() * 2,
-      wobble: Math.random() * Math.PI * 2,
-      wobbleSpeed: 0.02 + Math.random() * 0.03,
-    }));
-    const resize = () => {
-      canvas.width = canvas.offsetWidth;
-      canvas.height = canvas.offsetHeight;
-    };
-    resize();
-    window.addEventListener("resize", resize);
-    const loop = () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      for (const p of particles) {
-        p.y += p.speed;
-        p.wobble += p.wobbleSpeed;
-        p.x += Math.sin(p.wobble) * 1.5;
-        if (p.y > canvas.height + 10) {
-          p.y = -10;
-          p.x = Math.random() * canvas.width;
-        }
-        ctx.fillStyle = p.color;
-        ctx.fillRect(p.x, p.y, p.size, p.size);
-      }
-      raf = requestAnimationFrame(loop);
-    };
-    raf = requestAnimationFrame(loop);
-    return () => {
-      cancelAnimationFrame(raf);
-      window.removeEventListener("resize", resize);
-    };
-  }, []);
-  return <canvas ref={canvasRef} style={S.confettiCanvas} />;
-}
-
-export default function RickyR() {
-  const [screen, setScreen] = useState("menu");
-  const [level, setLevel] = useState(null);
-  const [fallingWords, setFallingWords] = useState([]);
-  const [score, setScore] = useState(0);
-  const [missed, setMissed] = useState(0);
-  const [combo, setCombo] = useState(0);
-  const [bestCombo, setBestCombo] = useState(0);
-  const [pops, setPops] = useState([]);
-  const [wave, setWave] = useState(0);
-  const [waveBanner, setWaveBanner] = useState(null);
-  const [roundComplete, setRoundComplete] = useState(false);
-  const [listening, setListening] = useState(false);
-  const [heard, setHeard] = useState("");
-  const [supported, setSupported] = useState(true);
-  const [micCheck, setMicCheck] = useState("idle"); // idle | listening | heard | error
-  const [micCheckWord, setMicCheckWord] = useState("");
-
-  const recognitionRef = useRef(null);
-  const spawnTimerRef = useRef(null);
-  const wordIdRef = useRef(0);
-  const fallingRef = useRef([]);
-  const levelRef = useRef(null);
-  const shouldListenRef = useRef(false);
-  const waveRef = useRef(0);
-  const wordsSpawnedInWaveRef = useRef(0);
-  const waveSpawningDoneRef = useRef(false);
-
-  useEffect(() => {
-    fallingRef.current = fallingWords;
-  }, [fallingWords]);
-  useEffect(() => {
-    levelRef.current = level;
-  }, [level]);
-
-  // Advance wave when all words are resolved
-  useEffect(() => {
-    if (
-      screen === "playing" &&
-      !waveBanner &&
-      waveSpawningDoneRef.current &&
-      fallingWords.length === 0
-    ) {
-      advanceWave();
-    }
-  }, [fallingWords.length, screen, waveBanner, advanceWave]);
-
-  // Round complete → go to celebration screen
-  useEffect(() => {
-    if (roundComplete && screen === "playing") stopGame(true);
-  }, [roundComplete, screen, stopGame]);
-
-  // Check support on mount, but don't create recognition yet
-  useEffect(() => {
-    if (!SpeechRecognition) setSupported(false);
-  }, []);
-
-  const handleMatch = useCallback((matched) => {
-    setPops((p) => [
-      ...p,
-      { id: matched.id, x: matched.x, emoji: matched.emoji, word: matched.word },
-    ]);
-    setTimeout(
-      () => setPops((p) => p.filter((v) => v.id !== matched.id)),
-      700,
-    );
-    setFallingWords((p) => p.filter((fw) => fw.id !== matched.id));
-    setScore((s) => s + 10);
-    setCombo((c) => {
-      const n = c + 1;
-      setBestCombo((b) => Math.max(b, n));
-      return n;
-    });
-  }, []);
-
-  const handleExpire = useCallback((id) => {
-    setFallingWords((p) => {
-      const exists = p.some((fw) => fw.id === id);
-      if (!exists) return p; // already matched — don't count as miss
-      // Use setTimeout so missed/combo update after this setState
-      setTimeout(() => {
-        setMissed((m) => m + 1);
-        setCombo(0);
-      }, 0);
-      return p.filter((fw) => fw.id !== id);
-    });
-  }, []);
-
-  const startWave = useCallback(
-    (waveIndex) => {
-      const cfg = WAVE_CONFIG[waveIndex];
-      if (!cfg) return;
-      waveRef.current = waveIndex;
-      wordsSpawnedInWaveRef.current = 0;
-      waveSpawningDoneRef.current = false;
-      setWave(waveIndex);
-
-      const spawn = () => {
-        const lv = levelRef.current;
-        if (!lv) return;
-        wordsSpawnedInWaveRef.current++;
-        const entry = pickRandom(lv.words);
-        const id = ++wordIdRef.current;
-        const x = 12 + Math.random() * 66;
-        setFallingWords((p) => [...p, { ...entry, id, x, fallDuration: cfg.fallDuration }]);
-        setTimeout(() => handleExpire(id), cfg.fallDuration);
-
-        if (wordsSpawnedInWaveRef.current < cfg.wordCount) {
-          spawnTimerRef.current = setTimeout(spawn, cfg.spawnInterval);
-        } else {
-          waveSpawningDoneRef.current = true;
-        }
-      };
-      spawn();
-    },
-    [handleExpire],
-  );
-
-  const advanceWave = useCallback(() => {
-    const nextWave = waveRef.current + 1;
-    if (nextWave >= WAVE_CONFIG.length) {
-      setRoundComplete(true);
-      return;
-    }
-    setWaveBanner(`Vlna ${nextWave + 1}!`);
-    setTimeout(() => {
-      setWaveBanner(null);
-      startWave(nextWave);
-    }, WAVE_BANNER_DURATION_MS);
-  }, [startWave]);
-
-  // Create a fresh SpeechRecognition instance and start it.
-  // Called after mic permission is already granted.
-  const startListening = useCallback(() => {
-    // Clean up any prior instance
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.abort();
-      } catch (_) {}
-    }
-
-    const rec = new SpeechRecognition();
-    rec.lang = LANG;
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.maxAlternatives = 5;
-    recognitionRef.current = rec;
-    shouldListenRef.current = true;
-
-    rec.onresult = (e) => {
-      const latest = e.results[e.results.length - 1];
-      const candidates = [];
-      for (let i = 0; i < latest.length; i++)
-        candidates.push(latest[i].transcript.trim());
-      setHeard(candidates[0] || "");
-      for (const candidate of candidates) {
-        const tokens = normalize(candidate).split(/\s+/);
-        for (const token of tokens) {
-          const matched = fallingRef.current.find(
-            (fw) => normalize(fw.word) === token,
-          );
-          if (matched) {
-            handleMatch(matched);
-            return;
-          }
-        }
-      }
-    };
-
-    rec.onerror = (e) => {
-      if (e.error !== "no-speech" && e.error !== "aborted")
-        console.warn("Speech error:", e.error);
-    };
-
-    rec.onend = () => {
-      if (shouldListenRef.current) {
-        try {
-          recognitionRef.current.start();
-        } catch (_) {}
-      } else {
-        setListening(false);
-      }
-    };
-
-    try {
-      rec.start();
-      setListening(true);
-    } catch (_) {}
-  }, [handleMatch]);
-
-  const runMicCheck = async () => {
-    setMicCheck("listening");
-    setMicCheckWord("");
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((t) => t.stop());
-    } catch (err) {
-      setMicCheck("error");
-      return;
-    }
-    if (!SpeechRecognition) {
-      setMicCheck("error");
-      return;
-    }
-    const testRec = new SpeechRecognition();
-    testRec.lang = LANG;
-    testRec.continuous = false;
-    testRec.interimResults = true;
-    testRec.maxAlternatives = 1;
-    testRec.onresult = (e) => {
-      const transcript =
-        e.results[e.results.length - 1][0].transcript.trim();
-      setMicCheckWord(transcript);
-      if (e.results[e.results.length - 1].isFinal) {
-        setMicCheck("heard");
-        try {
-          testRec.stop();
-        } catch (_) {}
-      }
-    };
-    testRec.onerror = () => setMicCheck("error");
-    testRec.onend = () => {
-      setMicCheck((prev) => (prev === "listening" ? "heard" : prev));
-    };
-    setTimeout(() => {
-      try {
-        testRec.stop();
-      } catch (_) {}
-    }, 5000);
-    try {
-      testRec.start();
-    } catch (_) {
-      setMicCheck("error");
-    }
-  };
-
-  const startGame = async (lv) => {
-    // Request mic permission first
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((t) => t.stop());
-    } catch (err) {
-      alert(
-        "Bez mikrofonu to nepůjde 😔 Povol prosím přístup k mikrofonu.",
-      );
-      return;
-    }
-
-    setLevel(lv);
-    setScore(0);
-    setMissed(0);
-    setCombo(0);
-    setBestCombo(0);
-    setFallingWords([]);
-    setPops([]);
-    setHeard("");
-    setWave(0);
-    setWaveBanner(null);
-    setRoundComplete(false);
-    wordIdRef.current = 0;
-    waveRef.current = 0;
-    wordsSpawnedInWaveRef.current = 0;
-    waveSpawningDoneRef.current = false;
-    setScreen("playing");
-
-    // Small delay so React flushes state, then start wave 1 + listening
-    setTimeout(() => {
-      startWave(0);
-      startListening();
-    }, 50);
-  };
-
-  const stopGame = useCallback((celebrate = false) => {
-    setScreen(celebrate ? "celebration" : "over");
-    clearTimeout(spawnTimerRef.current);
-    shouldListenRef.current = false;
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.abort();
-      } catch (_) {}
-      setListening(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (missed >= MAX_MISSES && screen === "playing") stopGame();
-  }, [missed, screen, stopGame]);
-
-  useEffect(() => () => clearTimeout(spawnTimerRef.current), []);
-
-  // Cleanup recognition on unmount
-  useEffect(() => {
-    return () => {
-      shouldListenRef.current = false;
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.abort();
-        } catch (_) {}
-      }
-    };
-  }, []);
-
-  const celebrationStars = useMemo(() => calcStars(missed), [missed]);
-
-  // Save stars to localStorage when celebration screen is shown
-  useEffect(() => {
-    if (screen === "celebration" && level) {
-      saveStars(level.id, celebrationStars);
-    }
-  }, [screen, level, celebrationStars]);
-
-  if (!supported) {
-    return (
-      <div style={S.container}>
-        <div style={S.center}>
-          <p style={{ fontSize: 48 }}>{"\u{1F614}"}</p>
-          <p style={{ color: "#cbd5e1" }}>
-            Tvůj prohlížeč nepodporuje rozpoznávání řeči.
-          </p>
-          <p style={{ fontSize: 13, color: "#64748b" }}>
-            Zkus Chrome na počítači nebo Android.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  const storedStars = screen === "menu" ? getStoredStars() : {};
-
-  if (screen === "menu") {
-    return (
-      <div style={S.container}>
-        <div style={S.stars} />
-        <div style={S.center}>
-          <div style={S.title}>{"Říkej nahlas!"}</div>
-          <p style={{ fontSize: 15, color: "#94a3b8", marginBottom: 24 }}>
-            Vyber si skupinu hlásek:
-          </p>
-          <div style={S.levelGrid}>
-            {LEVELS.map((lv) => {
-              const best = storedStars[lv.id];
-              return (
-              <button
-                key={lv.id}
-                style={S.levelCard}
-                onClick={() => startGame(lv)}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.transform = "scale(1.06)";
-                  e.currentTarget.style.borderColor = "rgba(99,102,241,0.6)";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.transform = "scale(1)";
-                  e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)";
-                }}
-              >
-                <span style={{ fontSize: 44 }}>{lv.emoji}</span>
-                <span style={S.levelLabel}>{lv.label}</span>
-                <span style={{ fontSize: 13, color: "#94a3b8" }}>
-                  {lv.description}
-                </span>
-                <span
-                  style={{ fontSize: 11, color: "#64748b", fontStyle: "italic" }}
-                >
-                  {lv.words.slice(0, 4).map((w) => w.word).join(", ")}&hellip;
-                </span>
-                {best != null && (
-                  <span style={{ fontSize: 18, marginTop: 4 }}>
-                    {Array.from({ length: 3 }, (_, i) =>
-                      i < best ? "\u2B50" : "\u2606"
-                    ).join("")}
-                  </span>
-                )}
-              </button>
-              );
-            })}
-          </div>
-          <p style={{ fontSize: 13, color: "#64748b" }}>
-            {"\u{1F3A4}"} Potřebuješ mikrofon a Chrome
-          </p>
-
-          {/* Mic check */}
-          <button
-            style={{
-              ...S.btn,
-              background:
-                micCheck === "heard"
-                  ? "linear-gradient(135deg, #059669, #10b981)"
-                  : micCheck === "error"
-                    ? "linear-gradient(135deg, #dc2626, #ef4444)"
-                    : "linear-gradient(135deg, #475569, #64748b)",
-              fontSize: 14,
-              padding: "8px 20px",
-              marginTop: 12,
-            }}
-            onClick={runMicCheck}
-          >
-            {micCheck === "idle" && "\u{1F3A4} Test mikrofonu"}
-            {micCheck === "listening" && "\u{1F534} Řekni cokoliv\u2026"}
-            {micCheck === "heard" &&
-              `\u2705 Slyším: \u201E${micCheckWord}\u201C`}
-            {micCheck === "error" &&
-              "\u274C Mikrofon nefunguje \u2014 zkus znovu"}
-          </button>
-
-          <p style={{ fontSize: 10, color: "#475569", marginTop: 16 }}>
-            {VERSION}
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div style={S.container}>
-      <div style={S.stars} />
-      <div style={S.badge}>{level?.label} — vlna {wave + 1}/{WAVE_CONFIG.length}</div>
-      <div style={S.hud}>
-        <HudItem label="Skóre" value={score} />
-        <HudItem
-          label="Kombo"
-          value={`${combo}\u00D7`}
-          color={combo > 2 ? "#fbbf24" : undefined}
-        />
-        <HudItem
-          label="Pryč"
-          value={`${missed}/${MAX_MISSES}`}
-          color={missed >= 3 ? "#f87171" : undefined}
-        />
-      </div>
-      {screen === "playing" &&
-        fallingWords.map((fw) => (
-          <div
-            key={fw.id}
-            style={{
-              ...S.falling,
-              left: `${fw.x}%`,
-              animation: `fall ${fw.fallDuration}ms linear forwards`,
-            }}
-          >
-            <span style={{ fontSize: 36 }}>{fw.emoji}</span>
-            <span style={S.wordPill}>{fw.word}</span>
-          </div>
-        ))}
-      {pops.map((p) => (
-        <div key={p.id} style={{ ...S.pop, left: `${p.x}%` }}>
-          <span style={{ fontSize: 32 }}>{"\u{1F4A5}"}</span>
-          <span style={{ fontSize: 18, fontWeight: 700, color: "#34d399" }}>
-            {p.word}
-          </span>
-        </div>
-      ))}
-      {waveBanner && (
-        <div style={S.waveBanner}>{waveBanner}</div>
-      )}
-      <div style={S.ground} />
-      {screen === "playing" && heard && (
-        <div style={S.heardBox}>
-          {"\u{1F3A4}"}{" "}
-          <span style={{ fontSize: 16, color: "#e2e8f0", fontWeight: 600 }}>
-            {heard}
-          </span>
-        </div>
-      )}
-      {screen === "playing" && (
-        <div
-          style={{
-            ...S.micDot,
-            background: listening ? "#34d399" : "#ef4444",
-          }}
-        >
-          {listening ? "\u{1F7E2}" : "\u{1F534}"}
-        </div>
-      )}
-      {screen === "celebration" && (
-        <div style={S.overlay}>
-          <ConfettiCanvas />
-          <div style={S.dragonFly}>🐉</div>
-          <div style={S.celebrationStars}>
-            {Array.from({ length: celebrationStars }, (_, i) => (
-              <span
-                key={i}
-                style={{
-                  ...S.celebrationStar,
-                  animationDelay: `${i * 0.2}s`,
-                }}
-              >
-                ⭐
-              </span>
-            ))}
-          </div>
-          <div style={S.celebrationMessage}>
-            {celebrationStars === 3
-              ? "Perfektní!"
-              : celebrationStars === 2
-                ? "Skvělé!"
-                : "Výborně!"}
-          </div>
-          <div style={{ display: "flex", gap: 24, marginBottom: 28 }}>
-            <StatBox value={score} label="bodů" />
-            <StatBox value={`${bestCombo}\u00D7`} label="nejlepší kombo" />
-          </div>
-          <div
-            style={{
-              display: "flex",
-              gap: 12,
-              flexWrap: "wrap",
-              justifyContent: "center",
-            }}
-          >
-            <button style={S.btn} onClick={() => startGame(level)}>
-              Další kolo
-            </button>
-            <button
-              style={{
-                ...S.btn,
-                background: "linear-gradient(135deg, #475569, #64748b)",
-              }}
-              onClick={() => {
-                setScreen("menu");
-                setLevel(null);
-              }}
-            >
-              Menu
-            </button>
-          </div>
-        </div>
-      )}
-      {screen === "over" && (
-        <div style={S.overlay}>
-          <div
-            style={{
-              fontSize: 48,
-              fontWeight: 900,
-              color: roundComplete ? "#34d399" : "#f87171",
-              marginBottom: 20,
-            }}
-          >
-            {roundComplete ? "Super!" : "Konec!"}
-          </div>
-          <div style={{ display: "flex", gap: 24, marginBottom: 28 }}>
-            <StatBox value={score} label="bodů" />
-            <StatBox value={`${bestCombo}\u00D7`} label="nejlepší kombo" />
-          </div>
-          <div
-            style={{
-              display: "flex",
-              gap: 12,
-              flexWrap: "wrap",
-              justifyContent: "center",
-            }}
-          >
-            <button style={S.btn} onClick={() => startGame(level)}>
-              {"\u{1F504}"} Znovu
-            </button>
-            <button
-              style={{
-                ...S.btn,
-                background: "linear-gradient(135deg, #475569, #64748b)",
-              }}
-              onClick={() => {
-                setScreen("menu");
-                setLevel(null);
-              }}
-            >
-              {"\u25C0"} Menu
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function HudItem({ label, value, color }) {
-  return (
-    <div style={S.hudItem}>
-      <span
-        style={{
-          fontSize: 11,
-          color: "#94a3b8",
-          textTransform: "uppercase",
-          letterSpacing: 1,
-        }}
-      >
-        {label}
-      </span>
-      <span style={{ fontSize: 22, fontWeight: 800, color: color || "#e2e8f0" }}>
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function StatBox({ value, label }) {
-  return (
-    <div
-      style={{
-        background: "rgba(255,255,255,0.05)",
-        border: "1px solid rgba(255,255,255,0.1)",
-        borderRadius: 16,
-        padding: "16px 28px",
-        textAlign: "center",
-      }}
-    >
-      <div style={{ fontSize: 36, fontWeight: 800, color: "#e2e8f0" }}>
-        {value}
-      </div>
-      <div
-        style={{
-          fontSize: 12,
-          color: "#94a3b8",
-          textTransform: "uppercase",
-          letterSpacing: 1,
-        }}
-      >
-        {label}
-      </div>
-    </div>
-  );
-}
-
+// ============================================================
+// KEYFRAMES & STYLES — defined before components that reference S
+// ============================================================
 const keyframes = `
 @keyframes fall {
   0%   { top: -80px; opacity: 0; transform: translateX(-50%) scale(0.7); }
@@ -1049,3 +358,684 @@ const S = {
     zIndex: 2,
   },
 };
+
+function HudItem({ label, value, color }) {
+  return (
+    <div style={S.hudItem}>
+      <span
+        style={{
+          fontSize: 11,
+          color: "#94a3b8",
+          textTransform: "uppercase",
+          letterSpacing: 1,
+        }}
+      >
+        {label}
+      </span>
+      <span style={{ fontSize: 22, fontWeight: 800, color: color || "#e2e8f0" }}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function StatBox({ value, label }) {
+  return (
+    <div
+      style={{
+        background: "rgba(255,255,255,0.05)",
+        border: "1px solid rgba(255,255,255,0.1)",
+        borderRadius: 16,
+        padding: "16px 28px",
+        textAlign: "center",
+      }}
+    >
+      <div style={{ fontSize: 36, fontWeight: 800, color: "#e2e8f0" }}>
+        {value}
+      </div>
+      <div
+        style={{
+          fontSize: 12,
+          color: "#94a3b8",
+          textTransform: "uppercase",
+          letterSpacing: 1,
+        }}
+      >
+        {label}
+      </div>
+    </div>
+  );
+}
+
+function getStoredStars() {
+  try { return JSON.parse(localStorage.getItem("logogame-stars") || "{}"); }
+  catch { return {}; }
+}
+
+function saveStars(levelId, stars) {
+  const stored = getStoredStars();
+  if (!stored[levelId] || stars > stored[levelId]) {
+    stored[levelId] = stars;
+    localStorage.setItem("logogame-stars", JSON.stringify(stored));
+  }
+}
+
+function ConfettiCanvas() {
+  const canvasRef = useRef(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    let raf;
+    const COLORS = ["#ef4444","#fbbf24","#34d399","#3b82f6","#a855f7","#f97316","#ec4899"];
+    const particles = Array.from({ length: 80 }, () => ({
+      x: Math.random() * canvas.width,
+      y: Math.random() * -canvas.height,
+      size: 4 + Math.random() * 6,
+      color: COLORS[Math.floor(Math.random() * COLORS.length)],
+      speed: 1 + Math.random() * 2,
+      wobble: Math.random() * Math.PI * 2,
+      wobbleSpeed: 0.02 + Math.random() * 0.03,
+    }));
+    const resize = () => {
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+    };
+    resize();
+    window.addEventListener("resize", resize);
+    const loop = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      for (const p of particles) {
+        p.y += p.speed;
+        p.wobble += p.wobbleSpeed;
+        p.x += Math.sin(p.wobble) * 1.5;
+        if (p.y > canvas.height + 10) {
+          p.y = -10;
+          p.x = Math.random() * canvas.width;
+        }
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x, p.y, p.size, p.size);
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", resize);
+    };
+  }, []);
+  return <canvas ref={canvasRef} style={S.confettiCanvas} />;
+}
+
+export default function RickyR() {
+  const [screen, setScreen] = useState("menu");
+  const [level, setLevel] = useState(null);
+  const [fallingWords, setFallingWords] = useState([]);
+  const [score, setScore] = useState(0);
+  const [missed, setMissed] = useState(0);
+  const [combo, setCombo] = useState(0);
+  const [bestCombo, setBestCombo] = useState(0);
+  const [pops, setPops] = useState([]);
+  const [wave, setWave] = useState(0);
+  const [waveBanner, setWaveBanner] = useState(null);
+  const [roundComplete, setRoundComplete] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [heard, setHeard] = useState("");
+  const [supported, setSupported] = useState(true);
+  const [micCheck, setMicCheck] = useState("idle"); // idle | listening | heard | error
+  const [micCheckWord, setMicCheckWord] = useState("");
+
+  const recognitionRef = useRef(null);
+  const spawnTimerRef = useRef(null);
+  const wordIdRef = useRef(0);
+  const fallingRef = useRef([]);
+  const levelRef = useRef(null);
+  const shouldListenRef = useRef(false);
+  const waveRef = useRef(0);
+  const wordsSpawnedInWaveRef = useRef(0);
+  const waveSpawningDoneRef = useRef(false);
+
+  useEffect(() => {
+    fallingRef.current = fallingWords;
+  }, [fallingWords]);
+  useEffect(() => {
+    levelRef.current = level;
+  }, [level]);
+
+  // Check support on mount, but don't create recognition yet
+  useEffect(() => {
+    if (!SpeechRecognition) setSupported(false);
+  }, []);
+
+  const handleMatch = useCallback((matched) => {
+    setPops((p) => [
+      ...p,
+      { id: matched.id, x: matched.x, emoji: matched.emoji, word: matched.word },
+    ]);
+    setTimeout(
+      () => setPops((p) => p.filter((v) => v.id !== matched.id)),
+      700,
+    );
+    setFallingWords((p) => p.filter((fw) => fw.id !== matched.id));
+    setScore((s) => s + 10);
+    setCombo((c) => {
+      const n = c + 1;
+      setBestCombo((b) => Math.max(b, n));
+      return n;
+    });
+  }, []);
+
+  const handleExpire = useCallback((id) => {
+    setFallingWords((p) => {
+      const exists = p.some((fw) => fw.id === id);
+      if (!exists) return p; // already matched — don't count as miss
+      // Use setTimeout so missed/combo update after this setState
+      setTimeout(() => {
+        setMissed((m) => m + 1);
+        setCombo(0);
+      }, 0);
+      return p.filter((fw) => fw.id !== id);
+    });
+  }, []);
+
+  const startWave = useCallback(
+    (waveIndex) => {
+      const cfg = WAVE_CONFIG[waveIndex];
+      if (!cfg) return;
+      waveRef.current = waveIndex;
+      wordsSpawnedInWaveRef.current = 0;
+      waveSpawningDoneRef.current = false;
+      setWave(waveIndex);
+
+      const spawn = () => {
+        const lv = levelRef.current;
+        if (!lv) return;
+        wordsSpawnedInWaveRef.current++;
+        const entry = pickRandom(lv.words);
+        const id = ++wordIdRef.current;
+        const x = 12 + Math.random() * 66;
+        setFallingWords((p) => [...p, { ...entry, id, x, fallDuration: cfg.fallDuration }]);
+        setTimeout(() => handleExpire(id), cfg.fallDuration);
+
+        if (wordsSpawnedInWaveRef.current < cfg.wordCount) {
+          spawnTimerRef.current = setTimeout(spawn, cfg.spawnInterval);
+        } else {
+          waveSpawningDoneRef.current = true;
+        }
+      };
+      spawn();
+    },
+    [handleExpire],
+  );
+
+  const advanceWave = useCallback(() => {
+    const nextWave = waveRef.current + 1;
+    if (nextWave >= WAVE_CONFIG.length) {
+      setRoundComplete(true);
+      return;
+    }
+    setWaveBanner(`Vlna ${nextWave + 1}!`);
+    setTimeout(() => {
+      setWaveBanner(null);
+      startWave(nextWave);
+    }, WAVE_BANNER_DURATION_MS);
+  }, [startWave]);
+
+  // Create a fresh SpeechRecognition instance and start it.
+  // Called after mic permission is already granted.
+  const startListening = useCallback(() => {
+    // Clean up any prior instance
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.abort();
+      } catch { /* speech API may throw if already stopped */ }
+    }
+
+    const rec = new SpeechRecognition();
+    rec.lang = LANG;
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.maxAlternatives = 5;
+    recognitionRef.current = rec;
+    shouldListenRef.current = true;
+
+    rec.onresult = (e) => {
+      const latest = e.results[e.results.length - 1];
+      const candidates = [];
+      for (let i = 0; i < latest.length; i++)
+        candidates.push(latest[i].transcript.trim());
+      setHeard(candidates[0] || "");
+      for (const candidate of candidates) {
+        const tokens = normalize(candidate).split(/\s+/);
+        for (const token of tokens) {
+          const matched = fallingRef.current.find(
+            (fw) => normalize(fw.word) === token,
+          );
+          if (matched) {
+            handleMatch(matched);
+            return;
+          }
+        }
+      }
+    };
+
+    rec.onerror = (e) => {
+      if (e.error !== "no-speech" && e.error !== "aborted")
+        console.warn("Speech error:", e.error);
+    };
+
+    rec.onend = () => {
+      if (shouldListenRef.current) {
+        try {
+          recognitionRef.current.start();
+        } catch { /* speech API may throw if already stopped */ }
+      } else {
+        setListening(false);
+      }
+    };
+
+    try {
+      rec.start();
+      setListening(true);
+    } catch { /* speech API may throw if already stopped */ }
+  }, [handleMatch]);
+
+  const runMicCheck = async () => {
+    setMicCheck("listening");
+    setMicCheckWord("");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+    } catch {
+      setMicCheck("error");
+      return;
+    }
+    if (!SpeechRecognition) {
+      setMicCheck("error");
+      return;
+    }
+    const testRec = new SpeechRecognition();
+    testRec.lang = LANG;
+    testRec.continuous = false;
+    testRec.interimResults = true;
+    testRec.maxAlternatives = 1;
+    testRec.onresult = (e) => {
+      const transcript =
+        e.results[e.results.length - 1][0].transcript.trim();
+      setMicCheckWord(transcript);
+      if (e.results[e.results.length - 1].isFinal) {
+        setMicCheck("heard");
+        try {
+          testRec.stop();
+        } catch { /* speech API may throw if already stopped */ }
+      }
+    };
+    testRec.onerror = () => setMicCheck("error");
+    testRec.onend = () => {
+      setMicCheck((prev) => (prev === "listening" ? "heard" : prev));
+    };
+    setTimeout(() => {
+      try {
+        testRec.stop();
+      } catch { /* speech API may throw if already stopped */ }
+    }, 5000);
+    try {
+      testRec.start();
+    } catch {
+      setMicCheck("error");
+    }
+  };
+
+  const startGame = async (lv) => {
+    // Request mic permission first
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+    } catch {
+      alert(
+        "Bez mikrofonu to nepůjde 😔 Povol prosím přístup k mikrofonu.",
+      );
+      return;
+    }
+
+    setLevel(lv);
+    setScore(0);
+    setMissed(0);
+    setCombo(0);
+    setBestCombo(0);
+    setFallingWords([]);
+    setPops([]);
+    setHeard("");
+    setWave(0);
+    setWaveBanner(null);
+    setRoundComplete(false);
+    wordIdRef.current = 0;
+    waveRef.current = 0;
+    wordsSpawnedInWaveRef.current = 0;
+    waveSpawningDoneRef.current = false;
+    setScreen("playing");
+
+    // Small delay so React flushes state, then start wave 1 + listening
+    setTimeout(() => {
+      startWave(0);
+      startListening();
+    }, 50);
+  };
+
+  const stopGame = useCallback((celebrate = false) => {
+    setScreen(celebrate ? "celebration" : "over");
+    clearTimeout(spawnTimerRef.current);
+    shouldListenRef.current = false;
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.abort();
+      } catch { /* speech API may throw if already stopped */ }
+      setListening(false);
+    }
+  }, []);
+
+  // Advance wave when all words are resolved
+  useEffect(() => {
+    if (
+      screen === "playing" &&
+      !waveBanner &&
+      waveSpawningDoneRef.current &&
+      fallingWords.length === 0
+    ) {
+      advanceWave();
+    }
+  }, [fallingWords.length, screen, waveBanner, advanceWave]);
+
+  // Round complete → go to celebration screen
+  useEffect(() => {
+    if (roundComplete && screen === "playing") stopGame(true);
+  }, [roundComplete, screen, stopGame]);
+
+  useEffect(() => {
+    if (missed >= MAX_MISSES && screen === "playing") stopGame();
+  }, [missed, screen, stopGame]);
+
+  useEffect(() => () => clearTimeout(spawnTimerRef.current), []);
+
+  // Cleanup recognition on unmount
+  useEffect(() => {
+    return () => {
+      shouldListenRef.current = false;
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.abort();
+        } catch { /* speech API may throw if already stopped */ }
+      }
+    };
+  }, []);
+
+  const celebrationStars = useMemo(() => calcStars(missed), [missed]);
+
+  // Save stars to localStorage when celebration screen is shown
+  useEffect(() => {
+    if (screen === "celebration" && level) {
+      saveStars(level.id, celebrationStars);
+    }
+  }, [screen, level, celebrationStars]);
+
+  if (!supported) {
+    return (
+      <div style={S.container}>
+        <div style={S.center}>
+          <p style={{ fontSize: 48 }}>{"\u{1F614}"}</p>
+          <p style={{ color: "#cbd5e1" }}>
+            Tvůj prohlížeč nepodporuje rozpoznávání řeči.
+          </p>
+          <p style={{ fontSize: 13, color: "#64748b" }}>
+            Zkus Chrome na počítači nebo Android.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const storedStars = screen === "menu" ? getStoredStars() : {};
+
+  if (screen === "menu") {
+    return (
+      <div style={S.container}>
+        <div style={S.stars} />
+        <div style={S.center}>
+          <div style={S.title}>{"Říkej nahlas!"}</div>
+          <p style={{ fontSize: 15, color: "#94a3b8", marginBottom: 24 }}>
+            Vyber si skupinu hlásek:
+          </p>
+          <div style={S.levelGrid}>
+            {LEVELS.map((lv) => {
+              const best = storedStars[lv.id];
+              return (
+              <button
+                key={lv.id}
+                style={S.levelCard}
+                onClick={() => startGame(lv)}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.transform = "scale(1.06)";
+                  e.currentTarget.style.borderColor = "rgba(99,102,241,0.6)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.transform = "scale(1)";
+                  e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)";
+                }}
+              >
+                <span style={{ fontSize: 44 }}>{lv.emoji}</span>
+                <span style={S.levelLabel}>{lv.label}</span>
+                <span style={{ fontSize: 13, color: "#94a3b8" }}>
+                  {lv.description}
+                </span>
+                <span
+                  style={{ fontSize: 11, color: "#64748b", fontStyle: "italic" }}
+                >
+                  {lv.words.slice(0, 4).map((w) => w.word).join(", ")}&hellip;
+                </span>
+                {best != null && (
+                  <span style={{ fontSize: 18, marginTop: 4 }}>
+                    {Array.from({ length: 3 }, (_, i) =>
+                      i < best ? "\u2B50" : "\u2606"
+                    ).join("")}
+                  </span>
+                )}
+              </button>
+              );
+            })}
+          </div>
+          <p style={{ fontSize: 13, color: "#64748b" }}>
+            {"\u{1F3A4}"} Potřebuješ mikrofon a Chrome
+          </p>
+
+          {/* Mic check */}
+          <button
+            style={{
+              ...S.btn,
+              background:
+                micCheck === "heard"
+                  ? "linear-gradient(135deg, #059669, #10b981)"
+                  : micCheck === "error"
+                    ? "linear-gradient(135deg, #dc2626, #ef4444)"
+                    : "linear-gradient(135deg, #475569, #64748b)",
+              fontSize: 14,
+              padding: "8px 20px",
+              marginTop: 12,
+            }}
+            onClick={runMicCheck}
+          >
+            {micCheck === "idle" && "\u{1F3A4} Test mikrofonu"}
+            {micCheck === "listening" && "\u{1F534} Řekni cokoliv\u2026"}
+            {micCheck === "heard" &&
+              `\u2705 Slyším: \u201E${micCheckWord}\u201C`}
+            {micCheck === "error" &&
+              "\u274C Mikrofon nefunguje \u2014 zkus znovu"}
+          </button>
+
+          <p style={{ fontSize: 10, color: "#475569", marginTop: 16 }}>
+            {VERSION}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={S.container}>
+      <div style={S.stars} />
+      <div style={S.badge}>{level?.label} — vlna {wave + 1}/{WAVE_CONFIG.length}</div>
+      <div style={S.hud}>
+        <HudItem label="Skóre" value={score} />
+        <HudItem
+          label="Kombo"
+          value={`${combo}\u00D7`}
+          color={combo > 2 ? "#fbbf24" : undefined}
+        />
+        <HudItem
+          label="Pryč"
+          value={`${missed}/${MAX_MISSES}`}
+          color={missed >= 3 ? "#f87171" : undefined}
+        />
+      </div>
+      {screen === "playing" &&
+        fallingWords.map((fw) => (
+          <div
+            key={fw.id}
+            style={{
+              ...S.falling,
+              left: `${fw.x}%`,
+              animation: `fall ${fw.fallDuration}ms linear forwards`,
+            }}
+          >
+            <span style={{ fontSize: 36 }}>{fw.emoji}</span>
+            <span style={S.wordPill}>{fw.word}</span>
+          </div>
+        ))}
+      {pops.map((p) => (
+        <div key={p.id} style={{ ...S.pop, left: `${p.x}%` }}>
+          <span style={{ fontSize: 32 }}>{"\u{1F4A5}"}</span>
+          <span style={{ fontSize: 18, fontWeight: 700, color: "#34d399" }}>
+            {p.word}
+          </span>
+        </div>
+      ))}
+      {waveBanner && (
+        <div style={S.waveBanner}>{waveBanner}</div>
+      )}
+      <div style={S.ground} />
+      {screen === "playing" && heard && (
+        <div style={S.heardBox}>
+          {"\u{1F3A4}"}{" "}
+          <span style={{ fontSize: 16, color: "#e2e8f0", fontWeight: 600 }}>
+            {heard}
+          </span>
+        </div>
+      )}
+      {screen === "playing" && (
+        <div
+          style={{
+            ...S.micDot,
+            background: listening ? "#34d399" : "#ef4444",
+          }}
+        >
+          {listening ? "\u{1F7E2}" : "\u{1F534}"}
+        </div>
+      )}
+      {screen === "celebration" && (
+        <div style={S.overlay}>
+          <ConfettiCanvas />
+          <div style={S.dragonFly}>🐉</div>
+          <div style={S.celebrationStars}>
+            {Array.from({ length: celebrationStars }, (_, i) => (
+              <span
+                key={i}
+                style={{
+                  ...S.celebrationStar,
+                  animationDelay: `${i * 0.2}s`,
+                }}
+              >
+                ⭐
+              </span>
+            ))}
+          </div>
+          <div style={S.celebrationMessage}>
+            {celebrationStars === 3
+              ? "Perfektní!"
+              : celebrationStars === 2
+                ? "Skvělé!"
+                : "Výborně!"}
+          </div>
+          <div style={{ display: "flex", gap: 24, marginBottom: 28 }}>
+            <StatBox value={score} label="bodů" />
+            <StatBox value={`${bestCombo}\u00D7`} label="nejlepší kombo" />
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 12,
+              flexWrap: "wrap",
+              justifyContent: "center",
+            }}
+          >
+            <button style={S.btn} onClick={() => startGame(level)}>
+              Další kolo
+            </button>
+            <button
+              style={{
+                ...S.btn,
+                background: "linear-gradient(135deg, #475569, #64748b)",
+              }}
+              onClick={() => {
+                setScreen("menu");
+                setLevel(null);
+              }}
+            >
+              Menu
+            </button>
+          </div>
+        </div>
+      )}
+      {screen === "over" && (
+        <div style={S.overlay}>
+          <div
+            style={{
+              fontSize: 48,
+              fontWeight: 900,
+              color: roundComplete ? "#34d399" : "#f87171",
+              marginBottom: 20,
+            }}
+          >
+            {roundComplete ? "Super!" : "Konec!"}
+          </div>
+          <div style={{ display: "flex", gap: 24, marginBottom: 28 }}>
+            <StatBox value={score} label="bodů" />
+            <StatBox value={`${bestCombo}\u00D7`} label="nejlepší kombo" />
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 12,
+              flexWrap: "wrap",
+              justifyContent: "center",
+            }}
+          >
+            <button style={S.btn} onClick={() => startGame(level)}>
+              {"\u{1F504}"} Znovu
+            </button>
+            <button
+              style={{
+                ...S.btn,
+                background: "linear-gradient(135deg, #475569, #64748b)",
+              }}
+              onClick={() => {
+                setScreen("menu");
+                setLevel(null);
+              }}
+            >
+              {"\u25C0"} Menu
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

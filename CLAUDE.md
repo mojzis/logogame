@@ -16,6 +16,8 @@ Words fall from the sky; the player says them aloud to score points.
 src/
   main.jsx        — entry point, renders <RickyR />
   RickyR.jsx      — entire game (menu, playing, game-over screens + styles)
+  utils.js        — pure functions (normalize, calcStars, pickRandom)
+  utils.test.js   — tests for utils (bun test)
 index.html        — shell HTML (lang="cs")
 vite.config.js    — Vite config with React plugin and base path
 ricky-r.jsx       — legacy/backup copy (not used in build)
@@ -24,11 +26,21 @@ ricky-r.jsx       — legacy/backup copy (not used in build)
 ## Commands
 
 ```sh
-bun install       # install dependencies
+bun install       # install dependencies (also sets up git hooks)
 bun run dev       # local dev server
-bun run build     # production build → dist/
+bun run lint      # ESLint — zero warnings allowed
+bun test          # run tests
+bun run build     # lint + production build → dist/
 bun run preview   # preview production build
 ```
+
+## Quality gates
+
+- **ESLint** runs on every commit (pre-commit hook) and as part of `bun run build` (CI)
+- Zero warnings policy (`--max-warnings 0`) — fix warnings, don't accumulate them
+- Pre-commit hook is in `.githooks/pre-commit`, auto-configured via `postinstall`
+- **CI** (`.github/workflows/ci.yml`) runs lint + build + tests on every PR and push to master
+- Pure logic goes in `src/utils.js` with tests in `src/utils.test.js`
 
 ## Conventions
 
@@ -36,5 +48,6 @@ bun run preview   # preview production build
 - Speech recognition uses `cs-CZ` locale
 - Word matching normalizes away diacritics (NFD + strip combining marks) so voice input doesn't need exact accents
 - Game levels are defined in the `LEVELS` array at the top of `RickyR.jsx`
-- All styles are inline JS objects in the `S` constant at the bottom of `RickyR.jsx`
+- Styles (`S`), keyframes, and helper components (`HudItem`, `StatBox`) are defined **before** the main component — never reference a `const` before its declaration
+- **Hook ordering in React components**: define all `useCallback` functions before any `useEffect` that references them in its dependency array. Violating this causes a runtime ReferenceError (temporal dead zone).
 - No CSS files, no external component libraries
