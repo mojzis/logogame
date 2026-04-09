@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
-const VERSION = "v4";
+const VERSION = "v5";
 
 // ============================================================
 // CONFIG — word sets by level, based on Czech logopedie progression
@@ -13,20 +13,20 @@ const LEVELS = [
     emoji: "\u{1F409}",
     words: [
       { word: "drak", emoji: "\u{1F409}" },
-      { word: "dr\u00E1t", emoji: "\u{1FAA1}" },
-      { word: "dr\u00E1ha", emoji: "\u{1F6E4}\uFE0F" },
+      { word: "drát", emoji: "\u{1FAA1}" },
+      { word: "dráha", emoji: "\u{1F6E4}\uFE0F" },
       { word: "dravec", emoji: "\u{1F985}" },
       { word: "drozd", emoji: "\u{1F426}" },
       { word: "drobek", emoji: "\u{1F35E}" },
       { word: "druh", emoji: "\u{1F91D}" },
       { word: "vydra", emoji: "\u{1F9A6}" },
-      { word: "s\u00E1dra", emoji: "\u{1FA79}" },
+      { word: "sádra", emoji: "\u{1FA79}" },
       { word: "Ondra", emoji: "\u{1F466}" },
-      { word: "dr\u00E1\u010Dek", emoji: "\u{1FA81}" },
-      { word: "drsn\u00FD", emoji: "\u{1FAA8}" },
-      { word: "dr\u017E\u00E1k", emoji: "\u{1F527}" },
-      { word: "dro\u017Ed\u00ED", emoji: "\u{1FAD3}" },
-      { word: "dru\u017Eina", emoji: "\u{1F3EB}" },
+      { word: "dráček", emoji: "\u{1FA81}" },
+      { word: "drsný", emoji: "\u{1FAA8}" },
+      { word: "držák", emoji: "\u{1F527}" },
+      { word: "droždí", emoji: "\u{1FAD3}" },
+      { word: "družina", emoji: "\u{1F3EB}" },
     ],
   },
   {
@@ -35,10 +35,10 @@ const LEVELS = [
     description: "Slova s TR",
     emoji: "\u{1F333}",
     words: [
-      { word: "tr\u00E1va", emoji: "\u{1F33F}" },
-      { word: "tr\u00E1m", emoji: "\u{1FAB5}" },
+      { word: "tráva", emoji: "\u{1F33F}" },
+      { word: "trám", emoji: "\u{1FAB5}" },
       { word: "tramvaj", emoji: "\u{1F68B}" },
-      { word: "tr\u016Fn", emoji: "\u{1FA91}" },
+      { word: "trůn", emoji: "\u{1FA91}" },
       { word: "trubka", emoji: "\u{1F3BA}" },
       { word: "trojka", emoji: "3\uFE0F\u20E3" },
       { word: "strom", emoji: "\u{1F333}" },
@@ -46,7 +46,7 @@ const LEVELS = [
       { word: "straka", emoji: "\u{1F426}\u200D\u2B1B" },
       { word: "sestra", emoji: "\u{1F467}" },
       { word: "traktor", emoji: "\u{1F69C}" },
-      { word: "trpasl\u00EDk", emoji: "\u{1F9D9}" },
+      { word: "trpaslík", emoji: "\u{1F9D9}" },
       { word: "truhla", emoji: "\u{1F4E6}" },
       { word: "trnka", emoji: "\u{1FAD0}" },
       { word: "struna", emoji: "\u{1F3B8}" },
@@ -54,8 +54,16 @@ const LEVELS = [
   },
 ];
 
-const FALL_DURATION_MS = 8000;
-const SPAWN_INTERVAL_MS = 3200;
+// ============================================================
+// WAVE CONFIG — tweak pacing here
+// Each round = 3 waves; words per wave, fall speed, spawn interval
+// ============================================================
+const WAVE_CONFIG = [
+  { wordCount: 6,  fallDuration: 9000, spawnInterval: 3500 },  // calm
+  { wordCount: 8,  fallDuration: 7500, spawnInterval: 2800 },  // picking up
+  { wordCount: 10, fallDuration: 6500, spawnInterval: 2200 },  // fast, overlapping
+];
+const WAVE_BANNER_DURATION_MS = 1500;
 const MAX_MISSES = 5;
 const LANG = "cs-CZ";
 
@@ -82,6 +90,9 @@ export default function RickyR() {
   const [combo, setCombo] = useState(0);
   const [bestCombo, setBestCombo] = useState(0);
   const [pops, setPops] = useState([]);
+  const [wave, setWave] = useState(0);
+  const [waveBanner, setWaveBanner] = useState(null);
+  const [roundComplete, setRoundComplete] = useState(false);
   const [listening, setListening] = useState(false);
   const [heard, setHeard] = useState("");
   const [supported, setSupported] = useState(true);
@@ -94,6 +105,9 @@ export default function RickyR() {
   const fallingRef = useRef([]);
   const levelRef = useRef(null);
   const shouldListenRef = useRef(false);
+  const waveRef = useRef(0);
+  const wordsSpawnedInWaveRef = useRef(0);
+  const waveSpawningDoneRef = useRef(false);
 
   useEffect(() => {
     fallingRef.current = fallingWords;
@@ -101,6 +115,23 @@ export default function RickyR() {
   useEffect(() => {
     levelRef.current = level;
   }, [level]);
+
+  // Advance wave when all words are resolved
+  useEffect(() => {
+    if (
+      screen === "playing" &&
+      !waveBanner &&
+      waveSpawningDoneRef.current &&
+      fallingWords.length === 0
+    ) {
+      advanceWave();
+    }
+  }, [fallingWords.length, screen, waveBanner, advanceWave]);
+
+  // Round complete → stop game as success
+  useEffect(() => {
+    if (roundComplete && screen === "playing") stopGame();
+  }, [roundComplete, screen, stopGame]);
 
   // Check support on mount, but don't create recognition yet
   useEffect(() => {
@@ -126,24 +157,60 @@ export default function RickyR() {
   }, []);
 
   const handleExpire = useCallback((id) => {
-    setFallingWords((p) => p.filter((fw) => fw.id !== id));
-    setMissed((m) => m + 1);
-    setCombo(0);
+    setFallingWords((p) => {
+      const exists = p.some((fw) => fw.id === id);
+      if (!exists) return p; // already matched — don't count as miss
+      // Use setTimeout so missed/combo update after this setState
+      setTimeout(() => {
+        setMissed((m) => m + 1);
+        setCombo(0);
+      }, 0);
+      return p.filter((fw) => fw.id !== id);
+    });
   }, []);
 
-  const startSpawning = useCallback(() => {
-    const spawn = () => {
-      const lv = levelRef.current;
-      if (!lv) return;
-      const entry = pickRandom(lv.words);
-      const id = ++wordIdRef.current;
-      const x = 12 + Math.random() * 66;
-      setFallingWords((p) => [...p, { ...entry, id, x }]);
-      setTimeout(() => handleExpire(id), FALL_DURATION_MS);
-    };
-    spawn();
-    spawnTimerRef.current = setInterval(spawn, SPAWN_INTERVAL_MS);
-  }, [handleExpire]);
+  const startWave = useCallback(
+    (waveIndex) => {
+      const cfg = WAVE_CONFIG[waveIndex];
+      if (!cfg) return;
+      waveRef.current = waveIndex;
+      wordsSpawnedInWaveRef.current = 0;
+      waveSpawningDoneRef.current = false;
+      setWave(waveIndex);
+
+      const spawn = () => {
+        const lv = levelRef.current;
+        if (!lv) return;
+        wordsSpawnedInWaveRef.current++;
+        const entry = pickRandom(lv.words);
+        const id = ++wordIdRef.current;
+        const x = 12 + Math.random() * 66;
+        setFallingWords((p) => [...p, { ...entry, id, x, fallDuration: cfg.fallDuration }]);
+        setTimeout(() => handleExpire(id), cfg.fallDuration);
+
+        if (wordsSpawnedInWaveRef.current < cfg.wordCount) {
+          spawnTimerRef.current = setTimeout(spawn, cfg.spawnInterval);
+        } else {
+          waveSpawningDoneRef.current = true;
+        }
+      };
+      spawn();
+    },
+    [handleExpire],
+  );
+
+  const advanceWave = useCallback(() => {
+    const nextWave = waveRef.current + 1;
+    if (nextWave >= WAVE_CONFIG.length) {
+      setRoundComplete(true);
+      return;
+    }
+    setWaveBanner(`Vlna ${nextWave + 1}!`);
+    setTimeout(() => {
+      setWaveBanner(null);
+      startWave(nextWave);
+    }, WAVE_BANNER_DURATION_MS);
+  }, [startWave]);
 
   // Create a fresh SpeechRecognition instance and start it.
   // Called after mic permission is already granted.
@@ -257,7 +324,7 @@ export default function RickyR() {
       stream.getTracks().forEach((t) => t.stop());
     } catch (err) {
       alert(
-        "Bez mikrofonu to nep\u016Fjde \u{1F614} Povol pros\u00EDm p\u0159\u00EDstup k mikrofonu.",
+        "Bez mikrofonu to nepůjde 😔 Povol prosím přístup k mikrofonu.",
       );
       return;
     }
@@ -270,19 +337,25 @@ export default function RickyR() {
     setFallingWords([]);
     setPops([]);
     setHeard("");
+    setWave(0);
+    setWaveBanner(null);
+    setRoundComplete(false);
     wordIdRef.current = 0;
+    waveRef.current = 0;
+    wordsSpawnedInWaveRef.current = 0;
+    waveSpawningDoneRef.current = false;
     setScreen("playing");
 
-    // Small delay so React flushes state, then start spawning + listening
+    // Small delay so React flushes state, then start wave 1 + listening
     setTimeout(() => {
-      startSpawning();
+      startWave(0);
       startListening();
     }, 50);
   };
 
   const stopGame = useCallback(() => {
     setScreen("over");
-    clearInterval(spawnTimerRef.current);
+    clearTimeout(spawnTimerRef.current);
     shouldListenRef.current = false;
     if (recognitionRef.current) {
       try {
@@ -296,7 +369,7 @@ export default function RickyR() {
     if (missed >= MAX_MISSES && screen === "playing") stopGame();
   }, [missed, screen, stopGame]);
 
-  useEffect(() => () => clearInterval(spawnTimerRef.current), []);
+  useEffect(() => () => clearTimeout(spawnTimerRef.current), []);
 
   // Cleanup recognition on unmount
   useEffect(() => {
@@ -316,10 +389,10 @@ export default function RickyR() {
         <div style={S.center}>
           <p style={{ fontSize: 48 }}>{"\u{1F614}"}</p>
           <p style={{ color: "#cbd5e1" }}>
-            Tv\u016Fj prohl\u00ED\u017Ee\u010D nepodporuje rozpozn\u00E1v\u00E1n\u00ED \u0159e\u010Di.
+            Tvůj prohlížeč nepodporuje rozpoznávání řeči.
           </p>
           <p style={{ fontSize: 13, color: "#64748b" }}>
-            Zkus Chrome na po\u010D\u00EDta\u010Di nebo Android.
+            Zkus Chrome na počítači nebo Android.
           </p>
         </div>
       </div>
@@ -331,9 +404,9 @@ export default function RickyR() {
       <div style={S.container}>
         <div style={S.stars} />
         <div style={S.center}>
-          <div style={S.title}>{"\u0158\u00EDkej nahlas!"}</div>
+          <div style={S.title}>{"Říkej nahlas!"}</div>
           <p style={{ fontSize: 15, color: "#94a3b8", marginBottom: 24 }}>
-            Vyber si skupinu hl\u00E1sek:
+            Vyber si skupinu hlásek:
           </p>
           <div style={S.levelGrid}>
             {LEVELS.map((lv) => (
@@ -364,7 +437,7 @@ export default function RickyR() {
             ))}
           </div>
           <p style={{ fontSize: 13, color: "#64748b" }}>
-            {"\u{1F3A4}"} Pot\u0159ebuje\u0161 mikrofon a Chrome
+            {"\u{1F3A4}"} Potřebuješ mikrofon a Chrome
           </p>
 
           {/* Mic check */}
@@ -384,9 +457,9 @@ export default function RickyR() {
             onClick={runMicCheck}
           >
             {micCheck === "idle" && "\u{1F3A4} Test mikrofonu"}
-            {micCheck === "listening" && "\u{1F534} \u0158ekni cokoliv\u2026"}
+            {micCheck === "listening" && "\u{1F534} Řekni cokoliv\u2026"}
             {micCheck === "heard" &&
-              `\u2705 Sly\u0161\u00EDm: \u201E${micCheckWord}\u201C`}
+              `\u2705 Slyším: \u201E${micCheckWord}\u201C`}
             {micCheck === "error" &&
               "\u274C Mikrofon nefunguje \u2014 zkus znovu"}
           </button>
@@ -402,16 +475,16 @@ export default function RickyR() {
   return (
     <div style={S.container}>
       <div style={S.stars} />
-      <div style={S.badge}>{level?.label}</div>
+      <div style={S.badge}>{level?.label} — vlna {wave + 1}/{WAVE_CONFIG.length}</div>
       <div style={S.hud}>
-        <HudItem label="Sk\u00F3re" value={score} />
+        <HudItem label="Skóre" value={score} />
         <HudItem
           label="Kombo"
           value={`${combo}\u00D7`}
           color={combo > 2 ? "#fbbf24" : undefined}
         />
         <HudItem
-          label="Pry\u010D"
+          label="Pryč"
           value={`${missed}/${MAX_MISSES}`}
           color={missed >= 3 ? "#f87171" : undefined}
         />
@@ -423,7 +496,7 @@ export default function RickyR() {
             style={{
               ...S.falling,
               left: `${fw.x}%`,
-              animation: `fall ${FALL_DURATION_MS}ms linear forwards`,
+              animation: `fall ${fw.fallDuration}ms linear forwards`,
             }}
           >
             <span style={{ fontSize: 36 }}>{fw.emoji}</span>
@@ -438,6 +511,9 @@ export default function RickyR() {
           </span>
         </div>
       ))}
+      {waveBanner && (
+        <div style={S.waveBanner}>{waveBanner}</div>
+      )}
       <div style={S.ground} />
       {screen === "playing" && heard && (
         <div style={S.heardBox}>
@@ -463,15 +539,15 @@ export default function RickyR() {
             style={{
               fontSize: 48,
               fontWeight: 900,
-              color: "#f87171",
+              color: roundComplete ? "#34d399" : "#f87171",
               marginBottom: 20,
             }}
           >
-            Konec!
+            {roundComplete ? "Super!" : "Konec!"}
           </div>
           <div style={{ display: "flex", gap: 24, marginBottom: 28 }}>
-            <StatBox value={score} label="bod\u016F" />
-            <StatBox value={`${bestCombo}\u00D7`} label="nejlep\u0161\u00ED kombo" />
+            <StatBox value={score} label="bodů" />
+            <StatBox value={`${bestCombo}\u00D7`} label="nejlepší kombo" />
           </div>
           <div
             style={{
@@ -561,6 +637,12 @@ const keyframes = `
 @keyframes popAnim {
   0%   { transform: scale(1); opacity: 1; }
   100% { transform: scale(2.5); opacity: 0; }
+}
+@keyframes wavePulse {
+  0%   { transform: translate(-50%, -50%) scale(0.5); opacity: 0; }
+  20%  { transform: translate(-50%, -50%) scale(1.1); opacity: 1; }
+  80%  { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+  100% { transform: translate(-50%, -50%) scale(1.3); opacity: 0; }
 }`;
 
 if (typeof document !== "undefined") {
@@ -706,6 +788,19 @@ const S = {
     animation: "popAnim 0.7s ease-out forwards",
     pointerEvents: "none",
     zIndex: 20,
+  },
+  waveBanner: {
+    position: "absolute",
+    top: "40%",
+    left: "50%",
+    transform: "translate(-50%, -50%)",
+    fontSize: 56,
+    fontWeight: 900,
+    color: "#fbbf24",
+    textShadow: "0 0 40px rgba(251,191,36,0.6), 0 4px 20px rgba(0,0,0,0.5)",
+    zIndex: 25,
+    pointerEvents: "none",
+    animation: `wavePulse ${WAVE_BANNER_DURATION_MS}ms ease-out forwards`,
   },
   ground: {
     position: "absolute",
