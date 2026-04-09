@@ -121,6 +121,15 @@ const keyframes = `
   0%   { transform: scale(0); opacity: 0; }
   50%  { transform: scale(1.3); opacity: 1; }
   100% { transform: scale(1); opacity: 1; }
+}
+@keyframes sentenceExpand {
+  0%   { transform: translateX(-50%) scale(0.5); opacity: 0; }
+  60%  { transform: translateX(-50%) scale(1.05); opacity: 1; }
+  100% { transform: translateX(-50%) scale(1); opacity: 1; }
+}
+@keyframes sentenceGlow {
+  0%, 100% { box-shadow: 0 0 24px rgba(251,191,36,0.4), 0 0 48px rgba(251,191,36,0.2); }
+  50%      { box-shadow: 0 0 32px rgba(251,191,36,0.6), 0 0 64px rgba(251,191,36,0.3); }
 }`;
 
 if (typeof document !== "undefined") {
@@ -372,6 +381,36 @@ const S = {
     marginBottom: 20,
     textShadow: "0 0 40px rgba(251,191,36,0.6)",
     zIndex: 2,
+  },
+  sentenceBubble: {
+    position: "absolute",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 6,
+    transform: "translateX(-50%)",
+    pointerEvents: "none",
+    zIndex: 15,
+    animation: "sentenceExpand 0.4s ease-out",
+  },
+  sentencePill: {
+    fontSize: 22,
+    fontWeight: 800,
+    color: "#fff",
+    background: "linear-gradient(135deg, rgba(251,191,36,0.85), rgba(245,158,11,0.85))",
+    padding: "8px 24px",
+    borderRadius: 24,
+    letterSpacing: 0.5,
+    whiteSpace: "nowrap",
+    boxShadow: "0 0 24px rgba(251,191,36,0.4), 0 0 48px rgba(251,191,36,0.2)",
+    animation: "sentenceGlow 1.5s ease-in-out infinite",
+  },
+  sentenceCue: {
+    fontSize: 14,
+    fontWeight: 600,
+    color: "#fbbf24",
+    opacity: 0.8,
+    fontStyle: "italic",
   },
 };
 
@@ -991,19 +1030,39 @@ export default function RickyR() {
         />
       </div>
       {screen === "playing" &&
-        fallingWords.map((fw) => (
-          <div
-            key={fw.id}
-            style={{
-              ...S.falling,
-              left: `${fw.x}%`,
-              animation: `fall ${fw.fallDuration}ms linear forwards`,
-            }}
-          >
-            <span style={{ fontSize: 36 }}>{fw.emoji}</span>
-            <span style={S.wordPill}>{fw.word}</span>
-          </div>
-        ))}
+        fallingWords.map((fw) => {
+          if (fw.sentenceMode) {
+            return (
+              <div
+                key={fw.id}
+                style={{
+                  ...S.sentenceBubble,
+                  left: "50%",
+                  top: fw.top,
+                }}
+              >
+                <span style={{ fontSize: 36 }}>{fw.emoji}</span>
+                <span style={S.sentencePill}>
+                  {sentenceChallenge?.sentence || fw.word}
+                </span>
+                <span style={S.sentenceCue}>teď řekni celou větu!</span>
+              </div>
+            );
+          }
+          return (
+            <div
+              key={fw.id}
+              style={{
+                ...S.falling,
+                left: `${fw.x}%`,
+                animation: `fall ${fw.fallDuration}ms linear forwards`,
+              }}
+            >
+              <span style={{ fontSize: 36 }}>{fw.emoji}</span>
+              <span style={S.wordPill}>{fw.word}</span>
+            </div>
+          );
+        })}
       {pops.map((p) => (
         <div key={p.id} style={{ ...S.pop, left: `${p.x}%` }}>
           <span style={{ fontSize: 32 }}>{"\u{1F4A5}"}</span>
