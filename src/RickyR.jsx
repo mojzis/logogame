@@ -529,7 +529,53 @@ export default function RickyR() {
     if (!SpeechRecognition) setSupported(false);
   }, []);
 
+  const clearSentence = useCallback((id) => {
+    setSentenceChallenge(null);
+    clearTimeout(sentenceTimerRef.current);
+    setFallingWords((p) => p.filter((fw) => fw.id !== id));
+  }, []);
+
+  const handleSentenceMatch = useCallback((challenge) => {
+    clearSentence(challenge.id);
+    setPops((p) => [
+      ...p,
+      { id: challenge.id, x: challenge.x, emoji: challenge.emoji, word: challenge.sentence },
+    ]);
+    setTimeout(() => setPops((p) => p.filter((v) => v.id !== challenge.id)), 700);
+    setScore((s) => s + 20);
+  }, [clearSentence]);
+
   const handleMatch = useCallback((matched) => {
+    // Check if this word can trigger a sentence challenge
+    const entry = SENTENCE_MAP[matched.word.toLowerCase()];
+    if (entry && Math.random() < SENTENCE_TRIGGER_CHANCE && !sentenceChallengeRef.current) {
+      // Trigger sentence mode — award points but keep word on screen
+      setScore((s) => s + 10);
+      setCombo((c) => {
+        const n = c + 1;
+        setBestCombo((b) => Math.max(b, n));
+        return n;
+      });
+      setFallingWords((p) =>
+        p.map((fw) =>
+          fw.id === matched.id
+            ? { ...fw, sentenceMode: true, top: "40%" }
+            : fw,
+        ),
+      );
+      setSentenceChallenge({
+        id: matched.id,
+        x: matched.x,
+        sentence: entry.sentence,
+        keywords: entry.keywords,
+        word: matched.word,
+        emoji: matched.emoji,
+      });
+      sentenceTimerRef.current = setTimeout(() => clearSentence(matched.id), SENTENCE_TIMEOUT_MS);
+      return;
+    }
+
+    // Normal match — pop animation, remove word, award points
     setPops((p) => [
       ...p,
       { id: matched.id, x: matched.x, emoji: matched.emoji, word: matched.word },
@@ -545,20 +591,25 @@ export default function RickyR() {
       setBestCombo((b) => Math.max(b, n));
       return n;
     });
-  }, []);
+  }, [clearSentence]);
 
   const handleExpire = useCallback((id) => {
     setFallingWords((p) => {
-      const exists = p.some((fw) => fw.id === id);
-      if (!exists) return p; // already matched — don't count as miss
+      const fw = p.find((w) => w.id === id);
+      if (!fw) return p; // already matched — don't count as miss
+      if (fw.sentenceMode) {
+        // Sentence mode word — clear without penalty
+        setTimeout(() => clearSentence(id), 0);
+        return p.filter((w) => w.id !== id);
+      }
       // Use setTimeout so missed/combo update after this setState
       setTimeout(() => {
         setMissed((m) => m + 1);
         setCombo(0);
       }, 0);
-      return p.filter((fw) => fw.id !== id);
+      return p.filter((w) => w.id !== id);
     });
-  }, []);
+  }, [clearSentence]);
 
   const startWave = useCallback(
     (waveIndex) => {
@@ -627,6 +678,22 @@ export default function RickyR() {
       for (let i = 0; i < latest.length; i++)
         candidates.push(latest[i].transcript.trim());
       setHeard(candidates[0] || "");
+
+      // Check active sentence challenge first
+      const sc = sentenceChallengeRef.current;
+      if (sc) {
+        for (const candidate of candidates) {
+          const tokens = normalize(candidate).split(/\s+/);
+          const matchedKeywords = sc.keywords.filter((kw) =>
+            tokens.some((t) => normalize(kw) === t),
+          );
+          if (matchedKeywords.length >= 1) {
+            handleSentenceMatch(sc);
+            return;
+          }
+        }
+      }
+
       for (const candidate of candidates) {
         const tokens = normalize(candidate).split(/\s+/);
         for (const token of tokens) {
@@ -660,7 +727,7 @@ export default function RickyR() {
       rec.start();
       setListening(true);
     } catch { /* speech API may throw if already stopped */ }
-  }, [handleMatch]);
+  }, [handleMatch, handleSentenceMatch]);
 
   const runMicCheck = async () => {
     setMicCheck("listening");
