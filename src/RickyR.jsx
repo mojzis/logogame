@@ -182,23 +182,6 @@ export default function RickyR() {
     levelRef.current = level;
   }, [level]);
 
-  // Advance wave when all words are resolved
-  useEffect(() => {
-    if (
-      screen === "playing" &&
-      !waveBanner &&
-      waveSpawningDoneRef.current &&
-      fallingWords.length === 0
-    ) {
-      advanceWave();
-    }
-  }, [fallingWords.length, screen, waveBanner, advanceWave]);
-
-  // Round complete → go to celebration screen
-  useEffect(() => {
-    if (roundComplete && screen === "playing") stopGame(true);
-  }, [roundComplete, screen, stopGame]);
-
   // Check support on mount, but don't create recognition yet
   useEffect(() => {
     if (!SpeechRecognition) setSupported(false);
@@ -430,6 +413,23 @@ export default function RickyR() {
       setListening(false);
     }
   }, []);
+
+  // Advance wave when all words are resolved
+  useEffect(() => {
+    if (
+      screen === "playing" &&
+      !waveBanner &&
+      waveSpawningDoneRef.current &&
+      fallingWords.length === 0
+    ) {
+      advanceWave();
+    }
+  }, [fallingWords.length, screen, waveBanner, advanceWave]);
+
+  // Round complete → go to celebration screen
+  useEffect(() => {
+    if (roundComplete && screen === "playing") stopGame(true);
+  }, [roundComplete, screen, stopGame]);
 
   useEffect(() => {
     if (missed >= MAX_MISSES && screen === "playing") stopGame();
