@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { normalize, calcStars, pickRandom } from "./utils.js";
 
-const VERSION = "v6";
+const VERSION = "v7";
 
 // ============================================================
 // CONFIG — word sets by level, based on Czech logopedie progression
@@ -638,6 +638,7 @@ export default function RickyR() {
       if (!fw) return p; // already matched — don't count as miss
       if (fw.sentenceMode) {
         // Sentence mode word — clear without penalty
+        clearTimeout(sentenceTimerRef.current);
         setTimeout(() => clearSentence(id), 0);
         return p.filter((w) => w.id !== id);
       }
