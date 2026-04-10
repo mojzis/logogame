@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { normalize, calcStars, pickWeighted, getWordStats, saveWordStats } from "./utils.js";
 import LEVELS from "./levels.js";
 
-const VERSION = "v6";
+const VERSION = "v7";
 
 // ============================================================
 // WAVE CONFIG — tweak pacing here
@@ -17,6 +17,22 @@ const WAVE_BANNER_DURATION_MS = 1500;
 const MAX_MISSES = 5;
 const LANG = "cs-CZ";
 
+const SENTENCE_MAP = {
+  drozd:   { sentence: "Drozd má velký zobák.",     keywords: ["drozd", "zobák"] },
+  drak:    { sentence: "Drak letí přes hrad.",       keywords: ["drak", "hrad"] },
+  vydra:   { sentence: "Vydra loví v řece.",         keywords: ["vydra", "řece", "loví"] },
+  dráha:   { sentence: "Vlak jede po dráze.",        keywords: ["vlak", "dráze"] },
+  tráva:   { sentence: "Tráva je zelená.",           keywords: ["tráva", "zelená"] },
+  strom:   { sentence: "Strom roste v lese.",        keywords: ["strom", "lese"] },
+  straka:  { sentence: "Straka krade lesklé věci.",  keywords: ["straka", "krade"] },
+  traktor: { sentence: "Traktor jede po poli.",      keywords: ["traktor", "poli"] },
+  trubka:  { sentence: "Na trubku hraje trumpetista.", keywords: ["trubka", "trumpetista"] },
+  sestra:  { sentence: "Sestra čte knížku.",         keywords: ["sestra", "knížku"] },
+  sádra:   { sentence: "Na ruce má sádru.",          keywords: ["ruce", "sádru"] },
+  trpaslík: { sentence: "Trpaslík bydlí v lese.",   keywords: ["trpaslík", "lese", "bydlí"] },
+};
+const SENTENCE_TRIGGER_CHANCE = 0.25;
+const SENTENCE_TIMEOUT_MS = 5000;
 
 const SpeechRecognition =
   typeof window !== "undefined"
@@ -54,6 +70,15 @@ const keyframes = `
   0%   { transform: scale(0); opacity: 0; }
   50%  { transform: scale(1.3); opacity: 1; }
   100% { transform: scale(1); opacity: 1; }
+}
+@keyframes sentenceExpand {
+  0%   { transform: translateX(-50%) scale(0.5); opacity: 0; }
+  60%  { transform: translateX(-50%) scale(1.05); opacity: 1; }
+  100% { transform: translateX(-50%) scale(1); opacity: 1; }
+}
+@keyframes sentenceGlow {
+  0%, 100% { box-shadow: 0 0 24px rgba(251,191,36,0.4), 0 0 48px rgba(251,191,36,0.2); }
+  50%      { box-shadow: 0 0 32px rgba(251,191,36,0.6), 0 0 64px rgba(251,191,36,0.3); }
 }`;
 
 if (typeof document !== "undefined") {
@@ -306,6 +331,36 @@ const S = {
     textShadow: "0 0 40px rgba(251,191,36,0.6)",
     zIndex: 2,
   },
+  sentenceBubble: {
+    position: "absolute",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 6,
+    transform: "translateX(-50%)",
+    pointerEvents: "none",
+    zIndex: 15,
+    animation: "sentenceExpand 0.4s ease-out",
+  },
+  sentencePill: {
+    fontSize: 22,
+    fontWeight: 800,
+    color: "#fff",
+    background: "linear-gradient(135deg, rgba(251,191,36,0.85), rgba(245,158,11,0.85))",
+    padding: "8px 24px",
+    borderRadius: 24,
+    letterSpacing: 0.5,
+    whiteSpace: "nowrap",
+    boxShadow: "0 0 24px rgba(251,191,36,0.4), 0 0 48px rgba(251,191,36,0.2)",
+    animation: "sentenceGlow 1.5s ease-in-out infinite",
+  },
+  sentenceCue: {
+    fontSize: 14,
+    fontWeight: 600,
+    color: "#fbbf24",
+    opacity: 0.8,
+    fontStyle: "italic",
+  },
 };
 
 function HudItem({ label, value, color }) {
@@ -433,6 +488,7 @@ export default function RickyR() {
   const [supported, setSupported] = useState(true);
   const [micCheck, setMicCheck] = useState("idle"); // idle | listening | heard | error
   const [micCheckWord, setMicCheckWord] = useState("");
+  const [sentenceChallenge, setSentenceChallenge] = useState(null);
 
   const recognitionRef = useRef(null);
   const spawnTimerRef = useRef(null);
@@ -445,6 +501,8 @@ export default function RickyR() {
   const waveSpawningDoneRef = useRef(false);
   const wordStatsRef = useRef([]);
   const levelStatsRef = useRef({});
+  const sentenceChallengeRef = useRef(null);
+  const sentenceTimerRef = useRef(null);
 
   useEffect(() => {
     fallingRef.current = fallingWords;
@@ -452,13 +510,62 @@ export default function RickyR() {
   useEffect(() => {
     levelRef.current = level;
   }, [level]);
+  useEffect(() => {
+    sentenceChallengeRef.current = sentenceChallenge;
+  }, [sentenceChallenge]);
 
   // Check support on mount, but don't create recognition yet
   useEffect(() => {
     if (!SpeechRecognition) setSupported(false);
   }, []);
 
+  const clearSentence = useCallback((id) => {
+    setSentenceChallenge(null);
+    clearTimeout(sentenceTimerRef.current);
+    setFallingWords((p) => p.filter((fw) => fw.id !== id));
+  }, []);
+
+  const handleSentenceMatch = useCallback((challenge) => {
+    clearSentence(challenge.id);
+    setPops((p) => [
+      ...p,
+      { id: challenge.id, x: challenge.x, emoji: challenge.emoji, word: challenge.sentence },
+    ]);
+    setTimeout(() => setPops((p) => p.filter((v) => v.id !== challenge.id)), 700);
+    setScore((s) => s + 20);
+  }, [clearSentence]);
+
   const handleMatch = useCallback((matched) => {
+    // Check if this word can trigger a sentence challenge
+    const entry = SENTENCE_MAP[matched.word.toLowerCase()];
+    if (entry && Math.random() < SENTENCE_TRIGGER_CHANCE && !sentenceChallengeRef.current) {
+      // Trigger sentence mode — award points but keep word on screen
+      setScore((s) => s + 10);
+      setCombo((c) => {
+        const n = c + 1;
+        setBestCombo((b) => Math.max(b, n));
+        return n;
+      });
+      setFallingWords((p) =>
+        p.map((fw) =>
+          fw.id === matched.id
+            ? { ...fw, sentenceMode: true, top: "40%" }
+            : fw,
+        ),
+      );
+      setSentenceChallenge({
+        id: matched.id,
+        x: matched.x,
+        sentence: entry.sentence,
+        keywords: entry.keywords,
+        word: matched.word,
+        emoji: matched.emoji,
+      });
+      sentenceTimerRef.current = setTimeout(() => clearSentence(matched.id), SENTENCE_TIMEOUT_MS);
+      return;
+    }
+
+    // Normal match — pop animation, remove word, award points
     setPops((p) => [
       ...p,
       { id: matched.id, x: matched.x, emoji: matched.emoji, word: matched.word },
@@ -475,21 +582,27 @@ export default function RickyR() {
       return n;
     });
     wordStatsRef.current.push({ word: matched.word, result: "hit" });
-  }, []);
+  }, [clearSentence]);
 
   const handleExpire = useCallback((id, wordStr) => {
     setFallingWords((p) => {
-      const exists = p.some((fw) => fw.id === id);
-      if (!exists) return p; // already matched — don't count as miss
+      const fw = p.find((w) => w.id === id);
+      if (!fw) return p; // already matched — don't count as miss
+      if (fw.sentenceMode) {
+        // Sentence mode word — clear without penalty
+        clearTimeout(sentenceTimerRef.current);
+        setTimeout(() => clearSentence(id), 0);
+        return p.filter((w) => w.id !== id);
+      }
       // Use setTimeout so missed/combo update after this setState
       setTimeout(() => {
         setMissed((m) => m + 1);
         setCombo(0);
       }, 0);
       if (wordStr) wordStatsRef.current.push({ word: wordStr, result: "miss" });
-      return p.filter((fw) => fw.id !== id);
+      return p.filter((w) => w.id !== id);
     });
-  }, []);
+  }, [clearSentence]);
 
   const startWave = useCallback(
     (waveIndex) => {
@@ -559,6 +672,22 @@ export default function RickyR() {
       for (let i = 0; i < latest.length; i++)
         candidates.push(latest[i].transcript.trim());
       setHeard(candidates[0] || "");
+
+      // Check active sentence challenge first
+      const sc = sentenceChallengeRef.current;
+      if (sc) {
+        for (const candidate of candidates) {
+          const tokens = normalize(candidate).split(/\s+/);
+          const matchedKeywords = sc.keywords.filter((kw) =>
+            tokens.some((t) => normalize(kw) === t),
+          );
+          if (matchedKeywords.length >= 1) {
+            handleSentenceMatch(sc);
+            return;
+          }
+        }
+      }
+
       for (const candidate of candidates) {
         const tokens = normalize(candidate).split(/\s+/);
         for (const token of tokens) {
@@ -592,7 +721,7 @@ export default function RickyR() {
       rec.start();
       setListening(true);
     } catch { /* speech API may throw if already stopped */ }
-  }, [handleMatch]);
+  }, [handleMatch, handleSentenceMatch]);
 
   const runMicCheck = async () => {
     setMicCheck("listening");
@@ -663,6 +792,8 @@ export default function RickyR() {
     setWave(0);
     setWaveBanner(null);
     setRoundComplete(false);
+    setSentenceChallenge(null);
+    clearTimeout(sentenceTimerRef.current);
     wordIdRef.current = 0;
     waveRef.current = 0;
     wordsSpawnedInWaveRef.current = 0;
@@ -682,6 +813,8 @@ export default function RickyR() {
     setScreen(celebrate ? "celebration" : "over");
     clearTimeout(spawnTimerRef.current);
     shouldListenRef.current = false;
+    setSentenceChallenge(null);
+    clearTimeout(sentenceTimerRef.current);
     if (recognitionRef.current) {
       try {
         recognitionRef.current.abort();
@@ -721,6 +854,7 @@ export default function RickyR() {
   useEffect(() => {
     return () => {
       shouldListenRef.current = false;
+      clearTimeout(sentenceTimerRef.current);
       if (recognitionRef.current) {
         try {
           recognitionRef.current.abort();
@@ -857,19 +991,39 @@ export default function RickyR() {
         />
       </div>
       {screen === "playing" &&
-        fallingWords.map((fw) => (
-          <div
-            key={fw.id}
-            style={{
-              ...S.falling,
-              left: `${fw.x}%`,
-              animation: `fall ${fw.fallDuration}ms linear forwards`,
-            }}
-          >
-            <span style={{ fontSize: 36 }}>{fw.emoji}</span>
-            <span style={S.wordPill}>{fw.word}</span>
-          </div>
-        ))}
+        fallingWords.map((fw) => {
+          if (fw.sentenceMode) {
+            return (
+              <div
+                key={fw.id}
+                style={{
+                  ...S.sentenceBubble,
+                  left: "50%",
+                  top: fw.top,
+                }}
+              >
+                <span style={{ fontSize: 36 }}>{fw.emoji}</span>
+                <span style={S.sentencePill}>
+                  {sentenceChallenge?.sentence || fw.word}
+                </span>
+                <span style={S.sentenceCue}>teď řekni celou větu!</span>
+              </div>
+            );
+          }
+          return (
+            <div
+              key={fw.id}
+              style={{
+                ...S.falling,
+                left: `${fw.x}%`,
+                animation: `fall ${fw.fallDuration}ms linear forwards`,
+              }}
+            >
+              <span style={{ fontSize: 36 }}>{fw.emoji}</span>
+              <span style={S.wordPill}>{fw.word}</span>
+            </div>
+          );
+        })}
       {pops.map((p) => (
         <div key={p.id} style={{ ...S.pop, left: `${p.x}%` }}>
           <span style={{ fontSize: 32 }}>{"\u{1F4A5}"}</span>
