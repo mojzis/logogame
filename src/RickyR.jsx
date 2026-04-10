@@ -1,59 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { normalize, calcStars, pickRandom } from "./utils.js";
+import { normalize, calcStars, pickWeighted, getWordStats, saveWordStats } from "./utils.js";
+import LEVELS from "./levels.js";
 
 const VERSION = "v7";
-
-// ============================================================
-// CONFIG — word sets by level, based on Czech logopedie progression
-// ============================================================
-const LEVELS = [
-  {
-    id: "dr",
-    label: "DR",
-    description: "Slova s DR",
-    emoji: "\u{1F409}",
-    words: [
-      { word: "drak", emoji: "\u{1F409}" },
-      { word: "drát", emoji: "\u{1FAA1}" },
-      { word: "dráha", emoji: "\u{1F6E4}\uFE0F" },
-      { word: "dravec", emoji: "\u{1F985}" },
-      { word: "drozd", emoji: "\u{1F426}" },
-      { word: "drobek", emoji: "\u{1F35E}" },
-      { word: "druh", emoji: "\u{1F91D}" },
-      { word: "vydra", emoji: "\u{1F9A6}" },
-      { word: "sádra", emoji: "\u{1FA79}" },
-      { word: "Ondra", emoji: "\u{1F466}" },
-      { word: "dráček", emoji: "\u{1FA81}" },
-      { word: "drsný", emoji: "\u{1FAA8}" },
-      { word: "držák", emoji: "\u{1F527}" },
-      { word: "droždí", emoji: "\u{1FAD3}" },
-      { word: "družina", emoji: "\u{1F3EB}" },
-    ],
-  },
-  {
-    id: "tr",
-    label: "TR",
-    description: "Slova s TR",
-    emoji: "\u{1F333}",
-    words: [
-      { word: "tráva", emoji: "\u{1F33F}" },
-      { word: "trám", emoji: "\u{1FAB5}" },
-      { word: "tramvaj", emoji: "\u{1F68B}" },
-      { word: "trůn", emoji: "\u{1FA91}" },
-      { word: "trubka", emoji: "\u{1F3BA}" },
-      { word: "trojka", emoji: "3\uFE0F\u20E3" },
-      { word: "strom", emoji: "\u{1F333}" },
-      { word: "strach", emoji: "\u{1F628}" },
-      { word: "straka", emoji: "\u{1F426}\u200D\u2B1B" },
-      { word: "sestra", emoji: "\u{1F467}" },
-      { word: "traktor", emoji: "\u{1F69C}" },
-      { word: "trpaslík", emoji: "\u{1F9D9}" },
-      { word: "truhla", emoji: "\u{1F4E6}" },
-      { word: "trnka", emoji: "\u{1FAD0}" },
-      { word: "struna", emoji: "\u{1F3B8}" },
-    ],
-  },
-];
 
 // ============================================================
 // WAVE CONFIG — tweak pacing here
@@ -550,6 +499,8 @@ export default function RickyR() {
   const waveRef = useRef(0);
   const wordsSpawnedInWaveRef = useRef(0);
   const waveSpawningDoneRef = useRef(false);
+  const wordStatsRef = useRef([]);
+  const levelStatsRef = useRef({});
   const sentenceChallengeRef = useRef(null);
   const sentenceTimerRef = useRef(null);
 
@@ -630,9 +581,10 @@ export default function RickyR() {
       setBestCombo((b) => Math.max(b, n));
       return n;
     });
+    wordStatsRef.current.push({ word: matched.word, result: "hit" });
   }, [clearSentence]);
 
-  const handleExpire = useCallback((id) => {
+  const handleExpire = useCallback((id, wordStr) => {
     setFallingWords((p) => {
       const fw = p.find((w) => w.id === id);
       if (!fw) return p; // already matched — don't count as miss
@@ -647,6 +599,7 @@ export default function RickyR() {
         setMissed((m) => m + 1);
         setCombo(0);
       }, 0);
+      if (wordStr) wordStatsRef.current.push({ word: wordStr, result: "miss" });
       return p.filter((w) => w.id !== id);
     });
   }, [clearSentence]);
@@ -664,11 +617,12 @@ export default function RickyR() {
         const lv = levelRef.current;
         if (!lv) return;
         wordsSpawnedInWaveRef.current++;
-        const entry = pickRandom(lv.words);
+        const exclude = fallingRef.current.map((fw) => fw.word);
+        const entry = pickWeighted(lv.words, levelStatsRef.current, exclude);
         const id = ++wordIdRef.current;
         const x = 12 + Math.random() * 66;
         setFallingWords((p) => [...p, { ...entry, id, x, fallDuration: cfg.fallDuration }]);
-        setTimeout(() => handleExpire(id), cfg.fallDuration);
+        setTimeout(() => handleExpire(id, entry.word), cfg.fallDuration);
 
         if (wordsSpawnedInWaveRef.current < cfg.wordCount) {
           spawnTimerRef.current = setTimeout(spawn, cfg.spawnInterval);
@@ -844,6 +798,8 @@ export default function RickyR() {
     waveRef.current = 0;
     wordsSpawnedInWaveRef.current = 0;
     waveSpawningDoneRef.current = false;
+    wordStatsRef.current = [];
+    levelStatsRef.current = getWordStats(lv.id);
     setScreen("playing");
 
     // Small delay so React flushes state, then start wave 1 + listening
@@ -864,6 +820,10 @@ export default function RickyR() {
         recognitionRef.current.abort();
       } catch { /* speech API may throw if already stopped */ }
       setListening(false);
+    }
+    if (levelRef.current && wordStatsRef.current.length > 0) {
+      saveWordStats(levelRef.current.id, wordStatsRef.current);
+      wordStatsRef.current = [];
     }
   }, []);
 
