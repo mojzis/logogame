@@ -5,6 +5,11 @@ export const normalize = (s) =>
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z]/g, "");
 
+export function matchesSentenceKeywords(keywords, transcript) {
+  const tokens = transcript.split(/\s+/).map(normalize).filter(Boolean);
+  return keywords.filter((kw) => tokens.some((t) => normalize(kw) === t));
+}
+
 export function calcStars(missed) {
   if (missed === 0) return 3;
   if (missed <= 2) return 2;

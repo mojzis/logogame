@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { normalize, calcStars, pickWeighted, getWordStats, saveWordStats } from "./utils.js";
+import { normalize, calcStars, pickWeighted, getWordStats, saveWordStats, matchesSentenceKeywords } from "./utils.js";
 import LEVELS from "./levels.js";
 
 const VERSION = "v7";
@@ -589,10 +589,8 @@ export default function RickyR() {
       const fw = p.find((w) => w.id === id);
       if (!fw) return p; // already matched — don't count as miss
       if (fw.sentenceMode) {
-        // Sentence mode word — clear without penalty
-        clearTimeout(sentenceTimerRef.current);
-        setTimeout(() => clearSentence(id), 0);
-        return p.filter((w) => w.id !== id);
+        // Sentence mode word — ignore fall expiry, sentence timer handles cleanup
+        return p;
       }
       // Use setTimeout so missed/combo update after this setState
       setTimeout(() => {
@@ -602,7 +600,7 @@ export default function RickyR() {
       if (wordStr) wordStatsRef.current.push({ word: wordStr, result: "miss" });
       return p.filter((w) => w.id !== id);
     });
-  }, [clearSentence]);
+  }, []);
 
   const startWave = useCallback(
     (waveIndex) => {
@@ -677,11 +675,7 @@ export default function RickyR() {
       const sc = sentenceChallengeRef.current;
       if (sc) {
         for (const candidate of candidates) {
-          const tokens = normalize(candidate).split(/\s+/);
-          const matchedKeywords = sc.keywords.filter((kw) =>
-            tokens.some((t) => normalize(kw) === t),
-          );
-          if (matchedKeywords.length >= 1) {
+          if (matchesSentenceKeywords(sc.keywords, candidate).length >= 1) {
             handleSentenceMatch(sc);
             return;
           }
@@ -1017,6 +1011,9 @@ export default function RickyR() {
                 ...S.falling,
                 left: `${fw.x}%`,
                 animation: `fall ${fw.fallDuration}ms linear forwards`,
+                animationPlayState: sentenceChallenge ? "paused" : "running",
+                opacity: sentenceChallenge ? 0.4 : 1,
+                transition: "opacity 0.3s",
               }}
             >
               <span style={{ fontSize: 36 }}>{fw.emoji}</span>
