@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach } from "bun:test";
-import { normalize, calcStars, pickRandom, pickWeighted, getWordStats, saveWordStats } from "./utils.js";
+import { normalize, calcStars, pickRandom, pickWeighted, getWordStats, saveWordStats, matchesSentenceKeywords } from "./utils.js";
 
 describe("normalize", () => {
   test("lowercases and strips diacritics", () => {
@@ -114,6 +114,43 @@ describe("pickWeighted", () => {
   test("single word always returns it", () => {
     const single = [{ word: "solo", emoji: "S" }];
     expect(pickWeighted(single, {}).word).toBe("solo");
+  });
+});
+
+describe("matchesSentenceKeywords", () => {
+  test("matches a single keyword in transcript", () => {
+    const result = matchesSentenceKeywords(["drak", "hrad"], "Drak letí přes hrad");
+    expect(result).toEqual(["drak", "hrad"]);
+  });
+
+  test("matches keywords ignoring diacritics", () => {
+    const result = matchesSentenceKeywords(["tráva", "zelená"], "trava je zelena");
+    expect(result).toEqual(["tráva", "zelená"]);
+  });
+
+  test("returns empty array when no keywords match", () => {
+    const result = matchesSentenceKeywords(["drak", "hrad"], "kočka spí na gauči");
+    expect(result).toEqual([]);
+  });
+
+  test("handles empty transcript", () => {
+    const result = matchesSentenceKeywords(["drak"], "");
+    expect(result).toEqual([]);
+  });
+
+  test("handles partial word — does not match substring", () => {
+    const result = matchesSentenceKeywords(["les"], "lesklé věci");
+    expect(result).toEqual([]);
+  });
+
+  test("matches case-insensitively", () => {
+    const result = matchesSentenceKeywords(["Straka", "krade"], "STRAKA KRADE");
+    expect(result).toEqual(["Straka", "krade"]);
+  });
+
+  test("returns only the matched subset of keywords", () => {
+    const result = matchesSentenceKeywords(["trpaslík", "lese", "bydlí"], "trpaslík je tady");
+    expect(result).toEqual(["trpaslík"]);
   });
 });
 
